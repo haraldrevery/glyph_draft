@@ -151,9 +151,15 @@ export function cloneContourWithNewIds(contour: Contour): Contour {
       return copy;
     }),
   };
-  // Carry the non-destructive stroke (deep-cloned so the copy is independent), so
-  // duplicating a layer — and paste-in-place — preserve each path's stroke.
+  // Carry EVERY optional per-contour style (deep-cloned so the copy is independent), so
+  // duplicating a layer — and paste-in-place — preserve the path's full appearance.
+  // NOTE: this object is rebuilt field-by-field, so a new optional field on `Contour`
+  // must be added HERE too. Omitting one compiles clean and silently loses it on
+  // paste/duplicate — which is exactly how `paint`/`filled`/`corner` were dropped before.
   if (contour.stroke) clone.stroke = structuredClone(contour.stroke);
+  if (contour.paint) clone.paint = structuredClone(contour.paint);
+  if (contour.filled !== undefined) clone.filled = contour.filled;
+  if (contour.corner) clone.corner = { ...contour.corner };
   return clone;
 }
 
@@ -164,13 +170,18 @@ export function cloneContourWithNewIds(contour: Contour): Contour {
  * the glyph's `booleanPairs`).
  */
 export function cloneLayer(layer: Layer, name = `${layer.name} copy`): Layer {
-  return {
+  const clone: Layer = {
     id: createId("ly"),
     name,
     visible: layer.visible,
     locked: false, // a fresh duplicate is editable
     contours: layer.contours.map(cloneContourWithNewIds),
   };
+  // `baked` must survive the copy: renderContours returns a baked layer's contours
+  // VERBATIM (Invariant 4's deliberate exception). Dropping the flag force-CWs them,
+  // which fills in the holes of a duplicated import / merge / expanded stroke.
+  if (layer.baked) clone.baked = true;
+  return clone;
 }
 
 /** Immutably transform a glyph's layer array. */
