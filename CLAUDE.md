@@ -41,7 +41,9 @@ npm install
 npm run dev          # web — http://localhost:5173
 npm run typecheck    # tsc --noEmit (strict, must stay clean)
 npm test             # vitest run — pure-engine unit tests (must stay green)
-npm run build        # production web build
+npm run test:watch   # vitest in watch mode (what you want while doing geometry work)
+npm run build        # production web build — runs `tsc --noEmit` FIRST, so it subsumes typecheck
+npm run preview      # serve the built dist/ locally
 npm run tauri dev    # desktop (requires Rust toolchain + Tauri prerequisites)
 ```
 
@@ -664,7 +666,7 @@ shipped later — Phase M.)
   relative to the selection bbox). Applied via `editActions.alignSelectedPaths` →
   `replaceContoursEverywhere` (one undo step).
 - **Fill paint (the colour seam):** optional `Contour.paint` (see Invariant 4's paint bullet
-  + the `setContourPaint` action + the StrokePanel "Fill" section). The chosen foundation
+  + the `setContourPaint` action + the **Color panel** `FillPanel.tsx`). The chosen foundation
   that makes SVG import / richer colour cheap later.
 
 **Phase H — SVG import**
@@ -802,48 +804,124 @@ consume the extra groups.
 
 ### Future seams (deferred wishlist — keep these cheap, build only on demand)
 
-**The artist wishlist is essentially complete.** Only a handful of items are genuinely open, listed
-below **ranked by entanglement** (how many subsystems each couples = future-debt risk). The debt-smart
-rule: every new feature lands ON an existing seam, model fields stay **optional + migration-guarded**,
-and the Tier-2/3 seams below stay DOCUMENTED intentions — **built only when an artist actually asks
-(YAGNI), never pre-built.** The genuinely-open items are: **per-NODE corners**, **cap designer**, and
-**dynamic alignment "smart guides"** (Tier 1, ride existing seams); **procedural/L-system brushes**
-(Tier 2 — isolated as a new `model` but perf-heavy/experimental); **i18n/language** (Tier 3 —
-cross-cutting, defer hard). Everything else below is marked Shipped and kept for the design rationale.
+**The artist wishlist is essentially complete.** Only a handful of items are genuinely open.
+
+> ⚠️ **THE TIER LIST BELOW IS THE SINGLE SOURCE OF TRUTH for how entangled an open item is and
+> whether to build it.** Do not restate a tier number anywhere else in this document — the
+> "Not Yet Implemented" list and the Known-Gaps table deliberately carry **no** tier numbers and
+> just point here. (They used to disagree: every open item carried two or three different tiers,
+> so "should I build the cap designer?" got opposite answers from the same file.)
+
+The debt-smart rule: every new feature lands ON an existing seam, model fields stay **optional +
+migration-guarded**, and **Tier 2, 3 and 4 seams stay DOCUMENTED intentions — built only when an
+artist actually asks (YAGNI), never pre-built.** Tier 1 is the only "safe anytime" tier.
+
+**The five genuinely-open items, in build order** (each appears in its tier bullet below):
+smart guides (T1) → cap designer (T1) → procedural/L-system brushes (T2) → per-NODE corners (T3)
+→ i18n (T4). Everything else below is marked Shipped and kept for the design rationale.
 
 - **Tier 1 — isolated, rides an existing seam (safe anytime):**
-  - **Colour picker UI** → the `Contour.paint` seam (`setContourPaint` / StrokePanel `applyPaint`). Pure UI. **(Now shipped — richer Fill palette: presets + recent + hex, over the existing native swatch.)**
+  - **Colour picker UI** → the `Contour.paint` seam (`setContourPaint` / `applyPaint`, both in the **Color panel** `FillPanel.tsx` — NOT StrokePanel, which is shape-only). Pure UI. **(Now shipped — richer Fill palette: presets + recent + hex, over the existing native swatch.)**
   - **Rotate around a marked point** → **Shipped** — a draggable **pivot** on the Transform box (Ctrl+T): the rotate handle rotates the selection around the marked pivot (default = box center; double-click the pivot resets it), reusing `affine.rotateAbout`. Implemented as a transform-box pivot, NOT a separate tool — a standalone Rotate tool was rejected because switching tools clears the selection (Invariant: `setTool` resets selection), which would wipe what you mean to rotate.
+  - **OPEN — Dynamic alignment "smart guides"** (live alignment lines while dragging). The least
+    entangled open item: it touches **no document model at all**, so there is no migration and no
+    render fan-out. Every seam exists — `dragDelta` (`tools/shared.ts`) already takes an **injected
+    `snap` strategy** (`snapGeometry.ts`'s `dragSnapFn` is the precedent); `editorStore` already
+    holds ephemeral gesture visuals (`lasso`, `marquee`) cleared in `setTool`/`resetEphemeral`;
+    `components/MarqueeOverlay.tsx` (21 lines) is the overlay template; and `align.ts`
+    `contourBounds` supplies the bbox math. Two notes: widen `GeomSnap` first (it currently discards
+    the `ref` of what you snapped to, and a guide must know what it aligned to), and snapshot the
+    static bboxes at pointer-DOWN rather than recomputing per move. Ship the toggle session-only
+    (like `snapToGeometry`) to avoid a settings migration.
+  - **OPEN — Cap designer** (user-drawn custom serif/teardrop cap shapes). `withCap` in
+    `PaperGeometryService.ts` is a clean dispatch point — a `cap === "custom"` branch is ~6 lines and
+    inherits the per-end wiring, the terminal cap-angle handle, and the node/outward anchor
+    convention for free. Reuse the pattern machinery **verbatim**: `svgImport.normalizePattern`
+    (normalizes a `Contour[]` to a unit box), `halftonePatternPath` (caches the Paper compound —
+    already reused by BOTH halftone and dash, so a third caller is proven safe), and `footAxis` for
+    orientation; `rectCap` is the reference implementation. The StrokePanel "Import SVG…" flow
+    already exists twice and can be extracted to a shared hook.
+    ⚠️ **Design limit:** serif and drop-B are **not shapes** — they are per-position width fields
+    folded into `sampledOutline`, which is exactly what makes them seamless with the stem. A
+    user-supplied `Contour[]` can only ever be a **unioned** cap, so it will show a union boundary
+    on a tapered/profiled stroke. Scope custom caps to uniform-width terminals.
 - **Tier 2 — additive, touches ONE pipeline (behind a reserved seam):**
   - **Stroke decorators** (dashed/dotted/**custom-SVG-along-line**) → **Shipped** as an isolated **`model: "dash"`** brush (a top-level early return in `expandStroke`, like halftone — see "Strokes — current state"). This proved SAFER than the earlier "decorator post-pass" idea (a new model can't touch the offset/brush/serif code at all). Still deferred: simple dash/pattern decorators on the *existing* offset/brush models (vs. the dash model replacing the ribbon).
-  - **Cap designer** (custom serif/teardrop shapes): a custom-cap-shape type fed into the cap stage; reuses the cap A/B variant machinery.
+  - **OPEN — Procedural / L-system brushes** (growing branches, voronoi fracture, reaction-diffusion
+    along the path). Structurally this is the SAFEST of the open items — a 5th `StrokeStyle.model`
+    added as another **top-level early return** in `expandStroke` (beside `halftone`/`dash`), so the
+    offset/brush/serif/drop/profile machinery is literally unreachable for it and cannot regress.
+    Only ~4 files change (type union + style interface + default, the engine function, the
+    StrokePanel block, tests). Honour the two conventions the other two models established:
+    `solidify` (self-union) the elements **before** `normalize`, or nesting-based `correctWinding`
+    mislabels overlapping branches as holes (an XOR artifact already hit and fixed once in dash);
+    and add a graceful **element cap** like `HALFTONE_MAX_CELLS`/`MAX_DASH_ELEMENTS` that degrades
+    resolution rather than freezing. Two risks the other models don't have: element count is
+    **exponential** in L-system depth (cap depth AND total elements, counting as you grow), and any
+    randomness **must store its seed** in the style — otherwise canvas, thumbnail, preview and
+    export each compute a different shape, masked intermittently by the `expandStroke` WeakMap.
+    Note `PolygonGeometryService.expandStroke` ignores `model`, so headless tests can't cover it.
 - **Tier 3 — model + multi-pipeline fan-out (design the additive seam first):**
-  - **Rounded corners (general):** **Shipped** — a per-contour `Contour.corner?` (round/chamfer/inverted) + the pure render-time pre-pass `engine/geometry/corners.ts` `roundCorners` plugged into `renderContours` (before stroke-expand/booleans/export). Per-NODE corners (select individual anchors) remain a future extension on the same engine.
+  - **Rounded corners (general):** **Shipped** — a per-contour `Contour.corner?` (round/chamfer/inverted) + the pure render-time pre-pass `engine/geometry/corners.ts` `roundCorners` plugged into `renderContours` (before stroke-expand/booleans/export).
+  - **OPEN — Per-NODE corners** (`AnchorPoint.corner?`, selecting individual anchors). **Deceptive:
+    the engine is ~1 line, the plumbing is ~12 files.** `roundOne(P, prev, next, style)` is already
+    pure per-corner with the radius already clamped against *that* corner's own two edges and no
+    cross-corner state, so the engine change is just `roundOne(P, prev, next, P.corner ?? style)`
+    plus a nullable path style.
+    ⚠️ **The real cost: `AnchorPoint` is rebuilt FIELD-BY-FIELD in six places, and each would
+    silently drop a new optional field — dropping one COMPILES CLEAN, so typecheck cannot catch it.**
+    The six: `tools/shared.ts` `translatePoint` (**every node drag** + nudge), `affine.ts`
+    `transformAnchor` (transform box, align, SVG import, bold/italic export), `topology.ts`
+    `clonePoint` (split/join, scissors, knife, eraser) and its `reverseContour`, `path.ts`
+    `reverseContour` (**inside `ensureWinding`, so every filled contour**), and `glyphHelpers.ts`
+    `cloneContourWithNewIds` (copy/paste, duplicate — this one already lost `paint`/`filled`/
+    `corner` in production before it was fixed; treat it as the proof that this rake is real).
+    Also needed: both per-path gates in `layerFills.ts` must additionally test for per-node
+    overrides, a `PointRef[]`-keyed store action beside `setContourCorner`, and a mixed-state UI
+    decision (the Corners section is per-PATH via `useEditTargets`, while node selection lives in
+    `editorStore.selection` — Invariant 5a keeps them decoupled). Add a test per rebuild site.
   - **Custom-SVG-on-line decorator:** **Shipped** — the dash `model:"svg"` imports an SVG and tiles it
     along the line (scaled + rotated to the tangent; `DashStyle.pattern`). The ONLY open remnant is the
     niche "decorate the *existing* offset/brush ribbon" (vs. the dash model replacing it) — low value,
     deferred (see the Tier-2 note).
 - **Tier 4 — genuinely cross-cutting; defer deliberately:**
   - **Blend/echo between layers** → **Shipped** as the 5th pair op on the `Glyph.booleanPairs` seam — see Phase M. Handles outlined/multi-path/coloured/corner layers and morphs genuinely different shapes (arc-length resampling + cyclic alignment; different path counts collapse to a point). Only remaining caveat: resampled in-between steps are polyline approximations (not editable béziers), and A↔B colour isn't interpolated.
-  - **Procedural/L-system brushes** (perf-heavy, experimental) and **i18n / language** (touches every user-facing string — a "massive rewrite").
+  - **OPEN — i18n / language.** The most entangled item; defer hard. ~350-400 distinct user-facing
+    strings and **zero** infrastructure (no library, no `t()`, no string-constant module, no
+    extraction tooling or lint rule). The shape is friendlier than "massive rewrite" suggests —
+    **26 of 46 `.tsx` files have no user-facing strings at all** (every `components/` overlay is
+    pure SVG), and seven files hold well over half: `StrokePanel`, `FillPanel`, `App`, `ViewMenu`,
+    `GlyphSidebar`, `ExportModal`, and `commands/registry.ts` (22 command labels in one array,
+    already the single source for menus + right-click + the keybinding editor — the natural first
+    conversion). Three things are easy to overlook: ~46 **template-literal** labels
+    (`` `Width · ${n} u` ``) need interpolation-aware messages, not key lookup; `src/content/*.md`
+    (~460 words, imported `?raw`) localizes per-FILE and `?raw` resolves at build time, so a locale
+    switch needs `import.meta.glob` or bundling every language; and numbers/units would need
+    `Intl.NumberFormat`. Settings would take one additive `language?` field (**settings v8**) —
+    `settingsFile.ts` already names this exact case. **The real debt is not the conversion but the
+    ongoing discipline** with no lint rule to enforce it.
 
 (Free-hand pen — Phase J; **scissors/knife/eraser** — Phase K/L, on
 `splitContourAtPoints`/`lineCrossings`/`nearestPointOnContours`.)
 
 ### Not Yet Implemented
 
-The wishlist is essentially complete; only these remain open (see "Future seams" for the entanglement
-ranking and the build-on-demand rule):
-- **Cap designer** (custom serif/teardrop cap shapes) — Tier 1, rides the cap A/B `variant` machinery.
-- **Per-NODE corners** (select individual anchors) — Tier 1, an extension of `engine/geometry/corners.ts`
+The wishlist is essentially complete; only these remain open. **This list carries no tier numbers
+and no entanglement claims on purpose** — "Future seams" above is the single source for both, and
+for whether an item is safe to build yet. In build order:
+- **Dynamic alignment "smart guides"** (live alignment lines while dragging) — a drag-time overlay
+  (static "Snap to point" + the Align panel are already shipped).
+- **Cap designer** (custom serif/teardrop cap shapes) — a custom shape unioned in the cap stage.
+- **Procedural / L-system brushes** (perf-heavy, experimental) — a new `StrokeStyle.model`
+  early-return, like `halftone`/`dash`.
+- **Per-NODE corners** (select individual anchors) — an extension of `engine/geometry/corners.ts`
   (per-*path* `Contour.corner` is shipped).
-- **Dynamic alignment "smart guides"** (live alignment lines while dragging) — Tier 1, an isolated drag-time
-  overlay (static "Snap to point" + the Align panel are already shipped).
-- **Procedural / L-system brushes** (perf-heavy, experimental) — Tier 2, would be a new `StrokeStyle.model`
-  early-return (like `halftone`/`dash`).
-- **i18n / language** — Tier 3, cross-cutting (every user-facing string); deferred deliberately.
+- **i18n / language** — cross-cutting (every user-facing string); deferred deliberately.
 - (Niche) **decorators on the existing offset/brush ribbon** — low value now that `model:"dash"` ships
-  dashes/dots/custom-SVG-along-line.
+  dashes/dots/custom-SVG-along-line. If ever built, make it a `model` (a 6th early return that calls
+  the existing `sweptUniform`/`sampledOutline` helpers) rather than an inline post-pass — a post-pass
+  is the design already rejected once, and it would reach into the serif/drop code the A/B `variant`
+  system was built to protect.
 
 (Everything else from the wishlist is shipped — strokes/serifs/caps/profiles, the two-layer Pathfinder +
 **blend**, booleans/winding, layers/lock/onion, glyph sidebar, clipboard paste-in-place,
