@@ -129,7 +129,7 @@ function fromResult(result: paper.PathItem | null): Contour[] {
  * in both operands) survives, but a spurious self-overlap loop does not. Without
  * this the overlap loop nests inside the outline and correctWinding marks it a
  * hole, so the fill reads as an "exclude" under nonzero. Idempotent on an
- * already-unioned path (e.g. the offsetStroke result).
+ * already-unioned path (e.g. the sweptUniform result).
  */
 function solidify(item: paper.PathItem): paper.PathItem {
   return item.unite(item.clone(), { insert: false });
@@ -264,9 +264,10 @@ export class PaperGeometryService implements GeometryService {
       stroke.angleProfile && stroke.angleProfile.points.length >= 2 ? stroke.angleProfile : null;
 
     // Serif flare params: the foot swells the stem over a reach (see halfWidthAt).
-    // A DROP is NOT a flare — it keeps the stem thin and merges a teardrop hull
-    // onto the terminal (tangent neck → bulb; see dropTip), so it reads as a drop
-    // emerging from the stroke rather than an oval stuck on a fat end.
+    // A DROP is a flare too, but a rounder one: the stroke's OWN outline swells up to
+    // an ink pool (variant "a", closed by a tangent round cap) or through a necked
+    // bulb (variant "b", pure outline, no cap) — see the dropR/dropReach block below.
+    // Either way it is built INTO the body, never a hull unioned onto the terminal.
     // A terminal CAP-ANGLE handle supersedes the panel `angle` for that end (only when
     // the panel didn't set one), so dragging the handle on canvas rotates the foot.
     const startSerifBase = stroke.startSerif ?? DEFAULT_SERIF;
@@ -544,7 +545,7 @@ export class PaperGeometryService implements GeometryService {
 
     // Dissolve any self-overlap in the swept body so a sharp bend fills solid
     // instead of punching an "exclude" hole. Idempotent for the uniform branch
-    // (offsetStroke already unions); the safety net for the open sampled ribbon.
+    // (sweptUniform already unions); the safety net for the open sampled ribbon.
     // A CLOSED sampled annulus is already a clean ring (outer + reversed inner) and
     // uniting it with itself would dissolve the hole — so skip solidify there.
     if (!contour.closed) result = solidify(result);
@@ -678,7 +679,7 @@ function sampledOutline(
     // their own closed loop, assembled as a compound path. Both sides sample the
     // centerline forward, so they wind the SAME way — reverse one so the compound
     // reads as a ring (opposite windings) instead of a solid blob; `correctWinding`
-    // then sets outer CW / hole CCW (Invariant 4), as the offsetStroke ring does.
+    // then sets outer CW / hole CCW (Invariant 4), as the sweptUniform ring does.
     const a = new scope.Path({ insert: false });
     left.forEach((p) => a.add(p));
     a.closed = true;
@@ -1167,7 +1168,7 @@ function sweptBrush(
     const dot = dotAt(s);
     // Leave the OPEN terminals flat (butt): a disc within its own radius of an end would
     // poke past the flat butt that the quad cross-sections form, so skip it there. The
-    // shared cap-finishing pass (withCap / dropTip) then shapes the ends as for the
+    // shared cap-finishing pass (withCap) then shapes the ends as for the
     // offset body. (No global terminal half-plane cut — that sliced self-approaching
     // paths where a terminal's outward plane crossed a distant part of the body.)
     const nearTerminal = !closed && (s < dot || len - s < dot);
@@ -1397,7 +1398,7 @@ function withCap(
       .unite(rectCap(point, t, r, style), { insert: false })
       .subtract(rectFarCut(point, t, style, big), { insert: false });
   }
-  return body; // butt — offsetStroke already capped flat
+  return body; // butt — sweptUniform already capped flat
 }
 
 /** The outward foot/cap axis: a world `angleDeg` oriented to agree with the outward

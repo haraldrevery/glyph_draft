@@ -23,9 +23,10 @@ function outerConcavities(out: Contour[]): number {
 }
 
 /**
- * Stroke expansion (Paper.js + paperjs-offset), headless like the other Paper
- * tests. Guards the width calibration (the `offset` param vs total width) and the
- * open→outline / closed→frame topology the renderer depends on.
+ * Stroke expansion (Paper.js), headless like the other Paper tests. Outlines are
+ * built in-house by PaperGeometryService (sweptUniform / sweptBrush / sweptRound /
+ * sampledOutline) — the old paperjs-offset dependency is gone. Guards the width
+ * calibration and the open→outline / closed→frame topology the renderer depends on.
  */
 
 const g = new PaperGeometryService();

@@ -361,7 +361,8 @@ export interface Contour {
    *  so older saved documents load unchanged (see CLAUDE.md Invariant 7). */
   stroke?: StrokeStyle;
   /** Optional fill paint for this contour's INTERIOR (default = black ink).
-   *  Additive/optional so old saves load unchanged; see CLAUDE.md Invariant 6. */
+   *  Additive/optional so old saves load unchanged; see CLAUDE.md Invariant 4
+   *  (winding & paint) — Invariant 6 is Storage, not paint. */
   paint?: Paint;
   /** Whether the interior is filled — INDEPENDENT of `stroke`, so a closed path can
    *  have both a fill and a stroke outline at once. Undefined = the legacy default
