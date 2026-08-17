@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -rn \"randomUUID\\\\|nanoid\\\\|crypto\\\\.\\\\|id:\\\\s*\\\\`\\\\|uuid\\\\|Date.now\\\\|Math.random\" src/)",
+      "Bash(npm remove *)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(echo \"exit:$?\")",
+      "Bash(npx vitest *)",
+      "Bash(npm install *)",
+      "Bash(git mv *)",
+      "Bash(cd /home/hrldrvry/Downloads/glyph-forge; echo \"=== reconcileActive impl ===\"; grep -n \"reconcileActive\" src/state/documentStore.ts; sed -n '/reconcileActive: \\(\\) =>/,/^        },/p' src/state/documentStore.ts | head -40; echo \"=== imports top of documentStore ===\"; sed -n '1,40p' src/state/documentStore.ts)",
+      "Bash(awk 'NR>=60 && /return \\\\\\(/{found=1} found && /<div className=\"layers-panel\"/{print NR\": \"$0} found && /panel-header/{print NR\": \"$0}' /home/hrldrvry/Downloads/glyph-forge/src/features/layers/LayersPanel.tsx)",
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(grep -n 'paperjs-offset\\\\|zundo\\\\|components/$\\\\|controls/.*Toggle' CLAUDE.md)"
+    ],
+    "additionalDirectories": [
+      "/home/hrldrvry/Downloads/glyph-forge/src/state"
+    ]
+  }
+}

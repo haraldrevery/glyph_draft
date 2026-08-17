@@ -1,0 +1,35 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities for the main Glyph Draft window. Grants: the native open/save DIALOGS (project import/export, SVG-folder export); FS read/write of any user-PICKED file (a project .glphdrft anywhere, exported u_xxxx.svg into a chosen folder); and the $APPDATA-scoped FS the autosave StorageService (KV-over-filesystem) uses internally.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "fs:default",
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [{ "path": "**" }, { "path": "$HOME/**" }, { "path": "$APPDATA/**" }]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [{ "path": "**" }, { "path": "$HOME/**" }, { "path": "$APPDATA/**" }]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [{ "path": "$APPDATA/**" }]
+    },
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [{ "path": "$APPDATA/**" }]
+    },
+    {
+      "identifier": "fs:allow-remove",
+      "allow": [{ "path": "$APPDATA/**" }]
+    },
+    {
+      "identifier": "fs:allow-exists",
+      "allow": [{ "path": "$APPDATA/**" }]
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./node_modules/**)",
+      "Glob(./node_modules/**)",
+      "Grep(./node_modules/**)",
+      "Read(./src-tauri/target/**)",
+      "Glob(./src-tauri/target/**)",
+      "Grep(./src-tauri/target/**)",
+      "Read(./dist/**)",
+      "Glob(./dist/**)",
+      "Grep(./dist/**)",
+      "Read(./.git/**)",
+      "Glob(./.git/**)",
+      "Grep(./.git/**)"
+    ]
+  }
+}

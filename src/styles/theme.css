@@ -1,0 +1,2385 @@
+/*
+ * Glyph Draft theme.
+ *
+ * Design intent: a quiet, neutral workspace that gets out of the way of the
+ * glyph. Structure (em square, metrics, grid) is drawn in hairlines on a near
+ * monochrome surface. Exactly one accent — a warm "forge" ember — is reserved
+ * for live interaction feedback (the snap crosshair and active controls); it
+ * never appears on static chrome, so when it shows up it means something.
+ *
+ * Theming is driven by [data-theme] on <html>. Every color is a variable so the
+ * dark/light switch is a single attribute change with no component re-styling.
+ */
+
+:root {
+  --font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+
+  --radius: 8px;
+  --radius-sm: 5px;
+  --hairline: 1px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+
+  --transition: 120ms ease;
+}
+
+/* ============================================================================
+ * ===== EDIT THEME COLOURS HERE =====
+ * Each theme is one block of CSS variables. To tweak a theme's look, change the
+ * values below. Notes:
+ *   - `--accent` is the one interaction colour (sliders, toggles, snap crosshair,
+ *     active chrome). It is ALSO user-overridable at runtime via Settings → Accent
+ *     colour (App.tsx sets `--accent` inline on <html>), so `--accent-strong` and
+ *     `--accent-soft` are DERIVED from `--accent` (color-mix) and follow it.
+ *   - To add another theme, copy a block, change `[data-theme="…"]`, and add the
+ *     value to the `Theme` type + the Settings "Theme" submenu.
+ * ============================================================================ */
+
+/* ---------- Dark (default) — neutral gray/black, no blue tint ---------- */
+[data-theme="dark"] {
+  --bg: #141414;
+  --surface: #1c1c1c;
+  --surface-raised: #242424;
+  --border: #2c2c2c;
+  --border-strong: #3a3a3a;
+
+  --text: #e8e8e8;
+  --text-muted: #9b9b9b;
+  --text-faint: #6c6c6c;
+
+  --canvas-bg: #0e0e0e;
+  --grid-line: rgba(255, 255, 255, 0.055);
+  --em-square: rgba(255, 255, 255, 0.16);
+  --metric-line: rgba(255, 255, 255, 0.13);
+  --baseline-line: rgba(255, 255, 255, 0.34);
+  --sidebearing-line: rgba(255, 255, 255, 0.1);
+
+  --accent: #ec9a52;
+  --accent-strong: color-mix(in srgb, var(--accent) 82%, white);
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* ---------- Light ---------- */
+[data-theme="light"] {
+  --bg: #f4f4f1;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --border: #e3e3de;
+  --border-strong: #cfcfc9;
+
+  --text: #1a1b1f;
+  --text-muted: #5f626b;
+  --text-faint: #9a9da6;
+
+  --canvas-bg: #fbfbf9;
+  --grid-line: rgba(0, 0, 0, 0.06);
+  --em-square: rgba(0, 0, 0, 0.2);
+  --metric-line: rgba(0, 0, 0, 0.16);
+  --baseline-line: rgba(0, 0, 0, 0.42);
+  --sidebearing-line: rgba(0, 0, 0, 0.12);
+
+  --accent: #cf7c2c;
+  --accent-strong: color-mix(in srgb, var(--accent) 84%, black);
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+/* ---------- Paper / cream — warm off-white, sepia ink ---------- */
+[data-theme="paper"] {
+  --bg: #e9e1cf;
+  --surface: #faf5ea;
+  --surface-raised: #fffdf6;
+  --border: #ddd2ba;
+  --border-strong: #c8bb9d;
+
+  --text: #3a342b;
+  --text-muted: #6f6650;
+  --text-faint: #9b9079;
+
+  --canvas-bg: #f5efe1;
+  --grid-line: rgba(58, 52, 43, 0.08);
+  --em-square: rgba(58, 52, 43, 0.22);
+  --metric-line: rgba(58, 52, 43, 0.18);
+  --baseline-line: rgba(58, 52, 43, 0.45);
+  --sidebearing-line: rgba(58, 52, 43, 0.13);
+
+  --accent: #c2702a;
+  --accent-strong: color-mix(in srgb, var(--accent) 84%, black);
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+
+  --shadow: 0 8px 24px rgba(80, 66, 40, 0.18);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-ui);
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ---------- App layout ---------- */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: var(--hairline) solid var(--border);
+  background: var(--surface);
+}
+
+/* ---------- Menubar ---------- */
+.menubar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* Save indicator — quiet, right of the menu bar. */
+.save-status {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.save-status-err {
+  color: #e06c6c;
+}
+
+.menu {
+  position: relative;
+}
+
+.menu-trigger {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.menu-trigger:hover,
+.menu-trigger.is-open {
+  background: var(--surface-raised);
+}
+
+.menu-dropdown {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  z-index: 60;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+}
+
+/* Right-click context menu: positioned at screen coords (fixed) and portaled to
+ * <body>. Shares .menu-item styling with the menubar dropdowns. The root holds the
+ * fixed position; .context-menu is the (possibly nested) list. */
+.context-menu-root {
+  position: fixed;
+  z-index: 200;
+}
+
+/* A context-menu submenu (e.g. "Move to layer ▸") is PORTALED to <body> at a fixed
+ * position so it escapes the parent list's vertical scroll container (an in-place
+ * `left:100%` flyout would otherwise just trigger a horizontal scrollbar). */
+.context-menu-submenu {
+  z-index: 210;
+}
+
+.context-menu {
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+}
+
+.menu-item-wrap {
+  position: relative;
+  display: flex;
+}
+
+.menu-submenu {
+  position: absolute;
+  left: 100%;
+  top: 0;
+  margin-left: 2px;
+}
+
+.menu-submenu-left {
+  left: auto;
+  right: 100%;
+  margin-left: 0;
+  margin-right: 2px;
+}
+
+.menu-item {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.menu-item-wrap > .menu-item {
+  flex: 1;
+}
+
+.menu-item-parent {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.menu-item-arrow {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+/* Nested submenu inside a menubar dropdown (components/menu/SubMenu.tsx). The parent
+ * row is .menu-item-parent; the flyout panel opens to its side on hover. */
+.menu-subitem {
+  position: relative;
+}
+.menu-flyout {
+  position: absolute;
+  left: 100%;
+  top: -6px;
+  z-index: 70;
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  /* A transparent left pad bridges the parent→flyout gap so the cursor never
+   * crosses dead space (which would fire pointerleave and dismiss the submenu). */
+  padding: var(--space-2);
+  padding-left: calc(var(--space-2) + 6px);
+  margin-left: -2px;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+}
+/* The ✓ slot on a checkable MenuItem (e.g. the active theme). */
+.menu-check {
+  display: inline-block;
+  width: 14px;
+  margin-right: var(--space-1);
+  color: var(--accent);
+}
+
+/* Illustrator-style Align panel: floats top-center over the canvas when 2+ paths are
+ * selected. */
+.align-panel {
+  position: absolute;
+  top: var(--space-3);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+}
+
+.align-group {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.align-group + .align-group {
+  padding-left: var(--space-2);
+  border-left: var(--hairline) solid var(--border);
+}
+
+.align-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.align-btn:hover {
+  background: var(--surface-raised);
+}
+
+.menu-item:hover {
+  background: var(--surface-raised);
+}
+
+.menu-item:disabled {
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
+.menu-item:disabled:hover {
+  background: transparent;
+}
+
+.app-main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* ---------- Canvas ---------- */
+.canvas-viewport {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.canvas-surface {
+  position: absolute;
+  inset: 0;
+  background: var(--canvas-bg);
+  overflow: hidden;
+  cursor: default;
+  outline: none;
+  touch-action: none; /* let usePanZoom own gestures */
+}
+
+.canvas-surface.space-held {
+  cursor: grab !important;
+}
+
+.canvas-surface.is-panning {
+  cursor: grabbing !important;
+}
+
+.canvas-surface:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.canvas-svg {
+  display: block;
+}
+
+/* Grid: hairline, non-scaling stroke is set on the elements themselves. */
+.grid-line {
+  stroke: var(--grid-line);
+  stroke-width: 1;
+}
+
+/* Em square: the primary structural boundary. */
+.em-square {
+  fill: none;
+  stroke: var(--em-square);
+  stroke-width: 1.5;
+}
+
+/* Metric guides. */
+.metric-line {
+  stroke: var(--metric-line);
+  stroke-width: 1;
+}
+
+.metric-line.baseline {
+  stroke: var(--baseline-line);
+  stroke-width: 1.5;
+}
+
+.metric-line.sidebearing {
+  stroke: var(--sidebearing-line);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+
+/* Freeform lasso marquee (screen space). */
+.lasso-path,
+.marquee-rect {
+  fill: var(--accent-soft);
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
+
+/* Transform box (Ctrl+T): screen-space bounding box with scale/rotate handles. */
+.transform-outline {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+  pointer-events: stroke; /* only the border drags (move); inside stays click-through */
+}
+
+.transform-rotate-stem {
+  stroke: var(--accent);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.transform-handle {
+  fill: var(--surface);
+  stroke: var(--accent);
+  stroke-width: 1.3;
+}
+
+.transform-handle:hover {
+  fill: var(--accent);
+}
+
+/* The rotation pivot (a "marked point"): a hollow ring + center dot, distinct from the
+   square scale handles and the round rotate grip. */
+.transform-pivot-ring {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.3;
+}
+.transform-pivot-dot {
+  fill: var(--accent);
+  stroke: none;
+}
+.transform-pivot:hover .transform-pivot-ring {
+  fill: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+/* Overlay labels (screen space). */
+.metric-label {
+  fill: var(--text-faint);
+  font-family: var(--font-ui);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Snap feedback — the one place the accent appears on the canvas. */
+.snap-cross {
+  stroke: var(--accent);
+  stroke-width: 1.25;
+}
+
+.snap-dot {
+  fill: var(--accent);
+  stroke: var(--canvas-bg);
+  stroke-width: 1;
+}
+
+/* Eraser size indicator (follows the cursor; constant screen px). */
+.eraser-cursor {
+  fill: color-mix(in srgb, var(--accent) 14%, transparent);
+  stroke: var(--accent);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+/* Draggable 1-unit coordinate reference (components/UnitReference.tsx). Screen-space,
+ * so the strokes are literal px; only the origin handle is pointer-active. */
+.unit-ref {
+  pointer-events: none;
+}
+.unit-ref-axis {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+.unit-ref-label {
+  fill: var(--accent);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  user-select: none;
+}
+.unit-ref-handle {
+  fill: color-mix(in srgb, var(--accent) 18%, transparent);
+  stroke: var(--accent);
+  stroke-width: 1;
+  pointer-events: all;
+  cursor: grab;
+}
+.unit-ref-handle:active {
+  cursor: grabbing;
+}
+
+/* Live coordinate readout. */
+.coord-readout {
+  position: absolute;
+  left: var(--space-4);
+  bottom: var(--space-4);
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(6px);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  user-select: none;
+}
+
+.coord {
+  color: var(--text-muted);
+}
+
+.coord b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.coord.snapped {
+  color: var(--accent);
+}
+
+.coord.snapped b {
+  color: var(--accent-strong);
+}
+
+.coord.muted {
+  color: var(--text-faint);
+}
+
+/* ---------- Collapsible HUD panels ---------- */
+/* Right-side stack: View + Stroke, top-right, stacked so they never overlap. */
+.hud-right {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-height: calc(100% - 2 * var(--space-4));
+  overflow: auto;
+}
+
+/* Shared panel chrome (box + collapsible header). */
+.panel {
+  position: relative; /* anchor the left-edge resize handle */
+  display: flex;
+  flex-direction: column;
+  min-height: 0; /* allow the content child to shrink + scroll within a max-height */
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.panel-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+.panel-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  /* When the panel is height-capped (moved near the bottom edge), scroll the body
+     instead of overflowing off-screen; the drag bar stays fixed above. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Draggable panel header: grab the bar to move the whole panel. Controls inside
+   the bar (the collapse chevron) keep their own pointer cursor. */
+.panel-drag {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+/* Drag the left edge to resize the panel width. */
+.panel-resize {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 1;
+}
+
+.panel-resize:hover {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.panel-drag:active {
+  cursor: grabbing;
+}
+
+.panel-drag button {
+  cursor: pointer;
+}
+
+/* The corner collapse/expand chevron. */
+.collapse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  color: var(--text-faint);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition);
+}
+
+.collapse-btn:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.collapse-btn svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform var(--transition);
+}
+
+/* Chevron points up when expanded; flip to point down when collapsed. */
+.collapse-btn.is-collapsed svg {
+  transform: rotate(180deg);
+}
+
+.panel-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.stroke-swap {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: var(--space-1) var(--space-2);
+}
+
+.stroke-save-preset {
+  align-self: flex-start;
+  font-size: 12px;
+  padding: var(--space-1) var(--space-2);
+}
+
+.stroke-save-form,
+.stroke-preset-manage {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* "Add current colour" row (a colour action) — kept visually with the palette swatches. */
+.fill-palette-add {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.fill-palette-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+/* Administrative palette controls (rename / delete / new) — a labeled, separated block. */
+.fill-palette-manage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: var(--hairline) solid var(--border);
+}
+/* Armed state of the two-click "Delete palette" — a clear danger cue (no modal). */
+.stroke-save-preset.is-confirming {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.graph-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.graph-svg {
+  display: block;
+  width: 100%; /* fill the panel width (viewBox + preserveAspectRatio=none scale it) */
+  height: 110px;
+  touch-action: none; /* pointer-drag owns the gestures */
+  cursor: crosshair;
+}
+
+.graph-bg {
+  fill: var(--surface-sunken, var(--surface));
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.graph-baseline {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.graph-curve {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.graph-pt {
+  fill: var(--surface);
+  stroke: var(--accent);
+  stroke-width: 2;
+  cursor: grab;
+}
+
+.graph-pt:hover {
+  fill: var(--accent);
+}
+
+.graph-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.graph-edit-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.graph-edit-row .number-input-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.graph-readout {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.stroke-preset-name {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  padding: var(--space-1) var(--space-2);
+  color: var(--text);
+  background: var(--surface-sunken, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1, 4px);
+}
+
+.stroke-serif {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* Group the stroke controls into visually distinct, labelled sections (Outline /
+   Caps & ends) with a subtle alternating tint that reads in both themes. */
+.stroke-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+.stroke-section-alt {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.stroke-section-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.stroke-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.stroke-fill-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: 13px;
+}
+
+.stroke-fill-swatch {
+  width: 36px;
+  height: 22px;
+  padding: 0;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
+.stroke-fill-swatch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Multi-selection "mixed" colour: the swatch's value is unreliable, so dim it and
+ * show a "Mixed" badge beside it. */
+.stroke-fill-swatch.is-mixed {
+  opacity: 0.5;
+  outline: 1px dashed var(--accent);
+  outline-offset: 1px;
+}
+.swatch-mixed {
+  font-size: 11px;
+  color: var(--accent-strong);
+  align-self: center;
+}
+/* "N selected — edits apply to all" banner at the top of a multi-edit panel. */
+.panel-multi-note {
+  font-size: 11px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+  margin: 0;
+}
+
+/* Hex entry next to the native colour swatch. */
+.fill-color-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.fill-hex-input {
+  width: 76px;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  text-transform: lowercase;
+  padding: 2px 6px;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* Preset + recent colour palette. */
+.fill-swatch-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: var(--space-1);
+}
+.fill-swatch-recent {
+  padding-top: 4px;
+  border-top: var(--hairline) solid var(--border);
+}
+.fill-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.fill-swatch.is-active {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Angle knob (gradient direction). */
+.knob-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.knob-label {
+  font-size: var(--font-sm);
+  color: var(--text-muted);
+}
+.knob {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  cursor: grab;
+  touch-action: none;
+  border-radius: 50%;
+}
+.knob:active {
+  cursor: grabbing;
+}
+.knob-face {
+  fill: color-mix(in srgb, var(--surface) 70%, transparent);
+  stroke: var(--border);
+  stroke-width: 3;
+}
+.knob-pointer {
+  stroke: var(--accent);
+  stroke-width: 6;
+  stroke-linecap: round;
+}
+
+.stroke-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.stroke-select-label {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.stroke-select-field {
+  appearance: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+  text-transform: capitalize;
+}
+
+/* ---------- Control panel groups (inside the shared .panel chrome) ---------- */
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.control-group-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.control-divider {
+  height: var(--hairline);
+  background: var(--border);
+}
+
+/* Button. */
+.btn {
+  appearance: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+/* Settings → Accent colour row (App.tsx): label + native swatch + optional Reset. */
+.menu-accent {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  font-size: 13px;
+  color: var(--text);
+}
+.menu-accent label {
+  flex: 1;
+}
+.menu-accent input[type="color"] {
+  width: 28px;
+  height: 20px;
+  padding: 0;
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: none;
+  cursor: pointer;
+}
+.btn-mini {
+  appearance: none;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 1px var(--space-2);
+  cursor: pointer;
+}
+.btn-mini:hover {
+  border-color: var(--accent);
+}
+
+.btn:hover {
+  border-color: var(--accent);
+}
+
+.btn-danger {
+  border-color: color-mix(in srgb, var(--danger, #e5484d) 60%, var(--border-strong));
+  color: var(--danger, #e5484d);
+}
+
+.btn-danger:hover {
+  border-color: var(--danger, #e5484d);
+  background: color-mix(in srgb, var(--danger, #e5484d) 14%, var(--surface-raised));
+}
+
+/* Text-preview window (a modal over .modal-overlay). */
+.text-preview-modal {
+  width: min(820px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.text-preview-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.text-preview-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.text-preview-stage {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  min-height: 200px;
+  max-height: 50vh;
+  padding: var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #ffffff; /* white paper so colours read true */
+  overflow: auto; /* fixed-size glyphs + word-wrap ⇒ scroll for long text */
+}
+
+.text-preview-svg {
+  display: block;
+  flex: none; /* keep the explicit px size (the component sizes 1 em = `size` px) */
+}
+
+.text-preview-empty {
+  margin: auto; /* keep the placeholder centred in the stage */
+  font-size: 13px;
+  color: #888;
+}
+
+.text-preview-size {
+  display: flex;
+  flex-direction: column;
+}
+
+.text-preview-input {
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  resize: vertical;
+}
+
+.text-preview-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ---------- Information modal (About / Licence / Legal / User guide) ---------- */
+.info-modal {
+  width: min(860px, 94vw);
+  height: min(640px, 86vh);
+  display: flex;
+  overflow: hidden;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.info-nav {
+  flex: none;
+  width: 168px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3);
+  border-right: var(--hairline) solid var(--border);
+  background: var(--bg);
+}
+.info-nav-item {
+  appearance: none;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+}
+.info-nav-item:hover {
+  color: var(--text);
+  background: var(--surface-raised);
+}
+.info-nav-item.is-active {
+  color: var(--text);
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.info-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.info-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-5);
+  color: var(--text);
+  line-height: 1.6;
+}
+.info-content h1 {
+  font-size: 22px;
+  margin: 0 0 var(--space-3);
+}
+.info-content h2 {
+  font-size: 17px;
+  margin: var(--space-4) 0 var(--space-2);
+}
+.info-content h3 {
+  font-size: 14px;
+  margin: var(--space-3) 0 var(--space-1);
+}
+.info-content p {
+  margin: 0 0 var(--space-3);
+}
+.info-content ul,
+.info-content ol {
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-5);
+}
+.info-content li {
+  margin: 2px 0;
+}
+.info-content a {
+  color: var(--accent);
+}
+.info-content code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.info-actions {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: var(--hairline) solid var(--border);
+}
+
+/* Small confirm dialog (e.g. delete glyph), centered over the .modal-overlay. */
+.confirm-dialog {
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.confirm-message {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* ---------- Toggle ---------- */
+.toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.toggle-label {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.toggle-switch {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  padding: 0;
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.toggle-switch.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform var(--transition), background var(--transition);
+}
+
+.toggle-switch.is-on .toggle-thumb {
+  transform: translateX(14px);
+  background: #fff;
+}
+
+/* Multi-selection "mixed" state: neutral track, the thumb centred as a dash. */
+.toggle-switch.is-mixed {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.toggle-switch.is-mixed .toggle-thumb {
+  transform: translateX(7px);
+  width: 6px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+/* ---------- Slider ---------- */
+.slider {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.slider-label,
+.number-input-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.slider-input {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.slider-label {
+  cursor: default;
+}
+
+/* The View dropdown can hold a lot of controls — give it a comfortable width and
+ * cap its height so it scrolls rather than running off-screen. */
+.view-menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 260px;
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+  overflow-x: hidden; /* a lone overflow-y:auto otherwise computes overflow-x:auto → side scrollbar */
+}
+
+/* Final-preview mode keeps the metric guides/em square as a dimmed reference. */
+.metrics-faint {
+  opacity: 0.25;
+}
+
+/* The inline "type an exact value" field shown while editing a slider. */
+.slider-edit {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+}
+
+/* ---------- Number input ---------- */
+.number-input {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.number-input-field {
+  font: inherit;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+}
+
+/* ---------- Focus + motion (quality floor) ---------- */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Mouse users who aren't keyboard-navigating don't get the ring. */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* ---------- Glyph geometry (world space) ---------- */
+/*
+ * The glyph reads as ink: a quiet translucent fill (nonzero winding, so holes
+ * show) under crisp hairline contour outlines. Outlines use non-scaling-stroke
+ * (set on the elements) to stay a constant width at any zoom.
+ */
+.glyph-fill {
+  fill: color-mix(in srgb, var(--text) 20%, transparent);
+  stroke: none;
+}
+
+/* Final view = the exported look: unpainted fills render SOLID ink (vs the faint
+ * edit-mode preview), matching the export's black. Painted groups set their colour
+ * via inline style and override this. */
+.glyph-view-final .glyph-fill {
+  fill: var(--text);
+}
+
+.glyph-outline {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text) 55%, transparent);
+  stroke-width: 1;
+}
+
+/* A boolean-pair operand's shape: shown dashed in the accent so its source
+   outline stays distinguishable from the combined fill it feeds. Both source
+   layers remain fully editable. */
+.glyph-outline-boolean {
+  stroke: var(--accent);
+  stroke-dasharray: 5 3;
+  opacity: 0.85;
+}
+
+/* Provisional drawing: pen rubber band and shape draft. The accent marks it
+   as live and the dash marks it as not-yet-committed. */
+.preview-path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.25;
+  stroke-dasharray: 4 3;
+  opacity: 0.9;
+}
+
+/* ---------- Editing chrome (screen space) ---------- */
+/* Unselected anchors stay neutral; the accent is spent only on the active
+   selection and on handles (which appear only for selected anchors). */
+.anchor {
+  fill: var(--surface);
+  stroke: var(--text-muted);
+  stroke-width: 1.25;
+}
+
+.anchor-selected {
+  fill: var(--accent);
+  stroke: var(--accent-strong);
+  stroke-width: 1.25;
+}
+
+.anchor-handle line {
+  stroke: var(--accent);
+  stroke-width: 1;
+  opacity: 0.8;
+}
+
+.anchor-handle circle {
+  fill: var(--accent);
+  stroke: var(--canvas-bg);
+  stroke-width: 0.75;
+}
+
+/* Anchors on editable-but-not-active layers (Phase 5 cross-layer selection):
+   dimmed so the active editing target still reads clearly, but visible enough
+   to click and select for cross-layer boolean / compound-path holes. */
+.overlay-inactive {
+  opacity: 0.6;
+}
+
+.pen-pending {
+  opacity: 0.95;
+}
+
+/* ---------- Tool palette ---------- */
+.toolbar {
+  position: absolute;
+  top: var(--space-4);
+  left: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+}
+
+.tool-button {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  background: transparent;
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition),
+    border-color var(--transition);
+}
+
+.tool-button:hover {
+  color: var(--text);
+  background: var(--surface-raised);
+}
+
+.tool-button-active {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.tool-button svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tool-shortcut {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  font-size: 8px;
+  line-height: 1;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Layers panel (floating HUD, bottom-right) ---------- */
+.layers-panel {
+  position: absolute;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+.panel-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.panel-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.layer-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: var(--space-1);
+  gap: 1px;
+}
+
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--transition);
+}
+
+.layer-row:hover {
+  background: var(--surface-raised);
+}
+
+/* Layers that own a selected NODE — a faint cue that an edit will touch them.
+   Deliberately WEAKER than selected/active (no bold bar) so it never competes with
+   the Pathfinder selection; defined before them so those win when a row is both. */
+.layer-row-involved {
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  box-shadow: inset 2px 0 0 var(--accent-soft);
+}
+
+/* Multi-selected layers (Ctrl/Cmd+click) — the Pathfinder's operands. Clearly
+   accent-tinted with a bold left bar so a selected row never reads as mere hover;
+   the active layer (below) is tinted stronger still as "the one being edited". */
+.layer-row-selected {
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.layer-row-selected:hover {
+  background: color-mix(in srgb, var(--accent) 20%, var(--surface));
+}
+
+.layer-row-active {
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent-strong);
+}
+
+.layer-row-active:hover {
+  background: var(--accent-soft);
+}
+
+/* Per-layer color chip: matches the layer's paths + nodes on the canvas. */
+.layer-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  border: var(--hairline) solid rgba(0, 0, 0, 0.25);
+}
+
+.layer-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition);
+}
+
+.layer-icon:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.layer-icon svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Hidden layer: dim the eye. Locked layer: accent the lock. */
+.layer-icon-off {
+  color: var(--text-faint);
+  opacity: 0.85;
+}
+
+.layer-icon-on {
+  color: var(--accent);
+}
+
+.layer-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.layer-row-active .layer-name {
+  color: var(--accent-strong);
+  font-weight: 500;
+}
+
+/* Pathfinder bar — appears when exactly two layers are selected. The four
+   buttons join them with a live, non-destructive boolean (A = upper, B = lower). */
+.pathfinder-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: var(--hairline) solid var(--border);
+  background: var(--accent-soft);
+}
+
+.pathfinder-caption {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pathfinder-caption strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.pathfinder-ops {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: var(--space-1);
+}
+
+.pathfinder-steps {
+  margin-top: var(--space-2);
+}
+
+.pathfinder-warn {
+  margin: var(--space-1) 0 0;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--accent);
+}
+
+.pathfinder-op {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: var(--space-1) 0;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition),
+    border-color var(--transition);
+}
+
+.pathfinder-op:hover {
+  color: var(--accent-strong);
+  background: var(--surface-raised);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.pathfinder-op-symbol {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.pathfinder-op-label {
+  font-size: 8px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* Per-row badge marking a layer that belongs to a boolean pair. Both layers of a
+   pair share a color (--pair-color, set inline per pair) so they read as a set.
+   Falls back to the accent when no color is provided. Click to clear. */
+.layer-pair-badge {
+  --pair-color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--pair-color);
+  background: color-mix(in srgb, var(--pair-color) 18%, transparent);
+  border: var(--hairline) solid color-mix(in srgb, var(--pair-color) 45%, transparent);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.layer-pair-badge:hover {
+  background: color-mix(in srgb, var(--pair-color) 30%, transparent);
+}
+
+.layer-pair-op {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.layer-pair-role {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.layer-name-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  border: var(--hairline) solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 1px var(--space-1);
+  outline: none;
+}
+
+.layer-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-top: var(--hairline) solid var(--border);
+}
+
+.layer-actions-spacer {
+  flex: 1;
+}
+
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition),
+    border-color var(--transition);
+}
+
+.icon-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--surface-raised);
+  border-color: var(--border-strong);
+}
+
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.icon-btn-danger:hover:not(:disabled) {
+  color: #e5715f;
+  border-color: color-mix(in srgb, #e5715f 45%, transparent);
+}
+
+.icon-btn svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ---------- Onion-skin ghost color (distinct from ink + ember accent) ---------- */
+:root {
+  --onion: #6f93bd;
+}
+[data-theme="light"] {
+  --onion: #4f79ad;
+}
+
+.onion-fill {
+  fill: var(--onion);
+}
+
+.onion-outline {
+  fill: none;
+  stroke: var(--onion);
+  stroke-width: 1;
+}
+
+/* ---------- Glyph sidebar (docked left) ---------- */
+.glyph-sidebar {
+  flex: none;
+  width: 212px; /* default; the live width is an inline style (resizable) */
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--surface);
+  border-right: var(--hairline) solid var(--border);
+}
+
+/* Right-edge drag handle: resize, or drag left to collapse. */
+.sidebar-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+  touch-action: none;
+}
+.sidebar-resize:hover {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* Collapsed: just a thin grip to drag/click the sidebar back out. */
+.glyph-sidebar-collapsed {
+  width: 12px;
+  overflow: visible;
+}
+.sidebar-reopen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: var(--surface);
+  border-right: var(--hairline) solid var(--border);
+  cursor: col-resize;
+  touch-action: none;
+}
+.sidebar-reopen:hover {
+  background: var(--surface-hover, var(--surface));
+}
+.sidebar-reopen-grip {
+  width: 2px;
+  height: 28px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.sidebar-reopen:hover .sidebar-reopen-grip {
+  background: var(--accent);
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-3) var(--space-2);
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+.glyph-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-2);
+  padding: var(--space-2);
+  align-content: start;
+}
+
+.glyph-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px;
+  border: var(--hairline) solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.glyph-cell:hover {
+  background: var(--surface-raised);
+}
+
+.glyph-cell-active {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: var(--accent-soft);
+}
+
+.glyph-cell-active:hover {
+  background: var(--accent-soft);
+}
+
+.glyph-cell-preview {
+  position: relative;
+  height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--canvas-bg);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.glyph-thumb {
+  width: 100%;
+  height: 100%;
+}
+
+.thumb-fill {
+  fill: color-mix(in srgb, var(--text) 82%, transparent);
+}
+
+.thumb-baseline {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+
+.ghost-toggle {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 19px;
+  height: 19px;
+  padding: 0;
+  color: var(--text-faint);
+  background: color-mix(in srgb, var(--surface) 65%, transparent);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--transition), color var(--transition);
+}
+
+.glyph-cell:hover .ghost-toggle {
+  opacity: 1;
+}
+
+.ghost-toggle:hover {
+  color: var(--text);
+}
+
+.ghost-toggle-on {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.ghost-toggle svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+}
+
+.ghost-toggle-on svg {
+  fill: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.glyph-cell-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 0 2px;
+}
+
+.glyph-cell-char {
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.glyph-cell-active .glyph-cell-char {
+  color: var(--accent-strong);
+  font-weight: 500;
+}
+
+.glyph-cell-cp {
+  flex: none;
+  font-size: 9px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border-top: var(--hairline) solid var(--border);
+}
+
+.glyph-add-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  outline: none;
+  transition: border-color var(--transition);
+}
+
+.glyph-add-input:focus {
+  border-color: var(--accent);
+}
+
+.glyph-add-input::placeholder {
+  color: var(--text-faint);
+}
+
+/* The non-destructive Pathfinder (two-layer boolean) lives in the Layers panel —
+   see .pathfinder-bar and .layer-pair-badge. Results are computed at render time
+   by the geometry service; the source layers are never mutated. */
+
+/* ---------- Export (Phase 6) ---------- */
+.export-overlay,
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+}
+
+/* Keyboard-shortcuts editor — a taller modal with a scrollable command list. */
+.keybind-modal {
+  width: 420px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.keybind-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--accent-strong);
+}
+
+.keybind-list {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.keybind-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.keybind-group-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: var(--space-1);
+}
+
+.keybind-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.keybind-label {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.keybind-chip {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 6px;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.keybind-chip.is-capturing {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
+
+.keybind-btn {
+  font-size: 12px;
+  padding: 2px 8px;
+}
+
+.export-modal {
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.export-modal-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.export-modal-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Export scope: a two-button segmented control (All glyphs / Active glyph). */
+.export-scope {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.export-scope-btn {
+  flex: 1;
+}
+
+.export-scope-btn.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a1206;
+}
+
+/* Per-glyph properties block in the glyph sidebar (advance width, …). */
+.glyph-props {
+  padding: var(--space-2) var(--space-3);
+  border-top: var(--hairline) solid var(--border);
+}
+
+.export-modal-sub code {
+  font-size: 11px;
+  color: var(--text);
+}
+
+.export-status {
+  margin: 0;
+  font-size: 12px;
+}
+
+.export-status-ok {
+  color: var(--accent-strong);
+}
+
+.export-status-err {
+  color: #e06c6c;
+}
+
+.export-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.export-confirm {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a1206;
+}
+
+.export-confirm:hover {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+.export-confirm:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---------- Root error boundary fallback ---------- */
+.error-boundary {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--canvas-bg, #14151a);
+  color: var(--text);
+}
+.error-boundary-card {
+  max-width: 460px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 24px;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface);
+}
+.error-boundary-card h1 {
+  margin: 0;
+  font-size: 16px;
+}
+.error-boundary-detail {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: var(--mono, ui-monospace, monospace);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-dim, #9aa0ab);
+  background: var(--surface-raised);
+  border-radius: var(--radius-sm);
+  max-height: 160px;
+  overflow: auto;
+}
+.error-boundary-actions {
+  display: flex;
+  justify-content: flex-end;
+}

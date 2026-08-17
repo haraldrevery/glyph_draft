@@ -1,0 +1,28 @@
+# Claude Code Ignore File
+
+## Build artifacts
+- dist/
+- dist-ssr/
+- src-tauri/target/
+
+## Dependencies
+- node_modules/
+- package-lock.json
+
+## Tauri generated files
+- src-tauri/gen/
+
+## Editor and OS files
+- .DS_Store
+- .vscode/
+- *.local
+- *.swp
+- *.swo
+- *~
+
+## Logs and temp files
+- *.log
+- npm-debug.log*
+
+## TypeScript
+- *.tsbuildinfo

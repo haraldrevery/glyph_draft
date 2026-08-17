@@ -1,0 +1,38 @@
+{
+  "name": "glyph-draft",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A vector glyph drawing tool. Draws contours and emits FontForge-ready SVG. NOT a font editor.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2",
+    "localforage": "^1.10.0",
+    "marked": "^18.0.5",
+    "paper": "^0.12.18",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/cli": "^2.11.4",
+    "@tauri-apps/plugin-dialog": "^2.0.0",
+    "@tauri-apps/plugin-fs": "^2.0.0",
+    "@types/node": "^20.19.43",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.8"
+  },
+  "comment": "@tauri-apps/* are dev deps because they are only ever reached through a dynamic import() inside TauriStorage, which createStorage() loads exclusively when running inside the Tauri webview. The web bundle never pulls that chunk. Paper.js is the live geometry engine (PaperGeometryService), wired behind the GeometryService interface via geometryEngine.ts — it computes curve-exact booleans for the non-destructive two-layer Pathfinder. The dependency-free PolygonGeometryService (which flattens curves) is kept for the DOM-free unit tests, which inject it directly."
+}
