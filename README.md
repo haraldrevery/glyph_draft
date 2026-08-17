@@ -5,32 +5,57 @@ glyphs**. One glyph is one document is one SVG, exported as `u_xxxx.svg` for
 import into FontForge. It is a glyph *drawing* tool, not a font editor —
 kerning, OTF compilation, and metrics editing are left to FontForge.
 
-## Shipped phases
+## What it does
 
-- **Phases 1–4:** pan/zoom canvas, em-square + adjustable grid with snap-to-grid, theme/state/storage foundations; pen tool and primitives (rectangle/ellipse/line/polygon/triangle) with winding engine; layer system and paste-in-place clipboard; glyph management with onion-skinning.
-- **Phase 5:** non-destructive **Pathfinder between two layers** — Ctrl/Cmd+click two layer rows, pick Union / Subtract / Intersect / Exclude. Curve-exact (Paper.js), both layers stay editable, results computed at render/export time only.
-- **Phase 6:** bulk export — every glyph as `u_xxxx.svg`, universal scale %, web zip download (`fflate`) or desktop folder write (Tauri). Reuses the Pathfinder pipeline so exports match the canvas exactly.
-- **Phase 7:** non-destructive per-path strokes — uniform and broad-nib/calligraphic, per-end caps (butt/round/**rectangle**/serif/drop), serif feet (anchor / world-absolute angle / asymmetric bias), drop terminals, expanded to filled outlines at render/export.
-- **Phase A:** command registry + rebindable keyboard shortcuts + right-click context menus.
-- **Phase B:** node topology — split/delete-toggle/merge endpoints on drag.
-- **Phase C:** settings persistence (theme/grid/prefs survive reload) + keybinding editor.
-- **Phase E:** transform box (Ctrl+T) — scale/rotate/move handles over node selection.
-- **Phase F (partial):** destructive merge/flatten — bakes selected layers' rendered geometry into one layer.
-- **Stroke library & profiles:** user-managed **stroke preset library** (persisted), and **width & nib-angle profiles** — per-path curves drawn in a small graph editor that vary thickness / pen angle along the path (closed paths render as an annulus). Cross-layer stroke editing.
-- **Portable project export/import:** File → Export/Import project… writes/reads one `.glphdrft` file (the versioned document envelope; legacy `.glyphforge` files still import), so a project moves between machines (web ⇄ desktop).
-- **Vector-editing basics:** arrow-key nudge (Shift ×10), duplicate (Ctrl/Cmd+D), flip H/V, reverse path, zoom-to-fit (Ctrl/Cmd+0) / actual size (Ctrl/Cmd+1), and Shift-constrain on the shape tools (square / circle / regular / 45°).
+> **Detail lives in [CLAUDE.md](CLAUDE.md)** — the architectural invariants, the per-phase history,
+> and the feature-by-feature status table. This README deliberately stays a summary and defers there
+> rather than duplicating it (the duplication is what let this file go stale before).
 
-**Not yet implemented:** color/fill support (incl. imported-SVG color), SVG import → layer, align/distribute, free pencil/brush, path-node corner rounding, knife/scissors/eraser, dashed/pattern strokes, blend/echo stepped interpolation, i18n.
+**Drawing** — Illustrator-style bezier pen, freehand pencil (auto-simplified/smoothed), and
+primitives (rectangle / ellipse / line / polygon / triangle) with Shift-constrain and draw-from-centre.
+Scissors, knife and eraser for cutting paths. Node editing with lasso and marquee select, a transform
+box (Ctrl+T) with a draggable rotation pivot, align/distribute, and snapping to grid or to
+anchors/paths.
+
+**Strokes (the core idea)** — you draw a *path*, then shape it with a **non-destructive stroke**: the
+centerline stays editable and the filled outline is derived at render/export. Uniform, broad-nib
+calligraphic, and swept-brush models; per-end caps (butt / round / rectangle / serif / drop) with A/B
+algorithm variants; bracketed serif feet and teardrop ink-pool terminals; width and nib-angle
+**profiles** drawn in a graph editor; plus experimental **halftone** and **dash/dot/custom-SVG**
+brushes. Presets are saved in a user-managed library. Path corners (round / chamfer / inverted) apply
+non-destructively too, and any stroke can be manually expanded to editable outlines.
+
+**Layers & booleans** — Illustrator-style layers (lock, hide, reorder, colour-coded). A
+**non-destructive Pathfinder between two layers**: Union / Subtract / Intersect / Exclude, plus
+**Blend** (an A→B stepped morph). Curve-exact via Paper.js, computed at render/export time, so both
+operand layers stay fully editable. Destructive merge/flatten is available when you want to bake.
+
+**Colour** — per-contour fill and stroke colour are independent, with opacity, two-stop linear
+gradients (including along-path for strokes), saved palettes, and imported-SVG colour. Decorative
+only: FontForge flattens it on import.
+
+**Glyphs & output** — a code-point-sorted sidebar with live thumbnails, onion-skinning against other
+glyphs, adjustable typography guides and per-glyph advance width, and a text-preview window. Export
+every glyph as `u_xxxx.svg` (or just one) with a universal scale %, an optional flat-black silhouette
+mode, and synthetic **bold/italic**. SVG import lands on a new layer.
+
+**Workspace** — dark / light / paper themes with a custom accent, movable and resizable panels, a
+command registry with fully rebindable shortcuts, right-click menus everywhere, per-glyph undo/redo,
+and autosave plus a portable `.glphdrft` project file that moves between web and desktop.
+
+**Not yet implemented:** dynamic alignment "smart guides", a custom cap designer, procedural/L-system
+brushes, per-*node* corner styles (per-path corners are shipped), and i18n. See CLAUDE.md →
+"Future seams" for how entangled each is and whether it's safe to build.
 
 ## Tech stack
 
 - **React 18 + TypeScript** (strict, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`) — UI and component layer
-- **Zustand** — shared app state; **zundo** — undo/redo history on the document store (200 steps)
-- **Paper.js** — live geometry engine: curve-exact boolean ops (union/subtract/intersect/exclude) behind the `GeometryService` interface. **paperjs-offset** — stroke expansion (uniform + calligraphic outlines).
-- **LocalForage** — IndexedDB persistence on web (autosave + explicit save, versioned format)
+- **Zustand** — shared app state. Undo/redo is **per-glyph** and hand-rolled (`src/state/history.ts`, 200 steps), so Ctrl+Z only ever changes the glyph you're looking at
+- **Paper.js** — the live geometry engine behind the `GeometryService` interface: curve-exact booleans and stroke expansion. Stroke outlines are built in-house (`PaperGeometryService`), not by an offset library
 - **fflate** — in-browser zip for the bulk SVG export
+- **marked** — renders the bundled Markdown in the Information modal
 - **LocalForage** (web) / **Tauri v2 FS plugin** (desktop) behind a single `StorageService` interface — the Tauri adapter is always lazy-loaded so the web bundle never references `@tauri-apps`
-- **Vite** for dev/build; **Tauri v2** for the desktop shell
+- **Vite** for dev/build; **Vitest** for the pure-engine unit tests (46 files, 433 tests); **Tauri v2** for the desktop shell
 
 > **Paper.js note:** Paper.js is stable but hasn't had a major release since 2022. It sits entirely behind `src/engine/geometry/geometryEngine.ts` — swapping it for another library is a one-line change in that file with no ripple into stores or UI.
 
@@ -84,14 +109,10 @@ on every OS, plus:
 | **macOS** | Xcode Command Line Tools (`xcode-select --install`). |
 | **Linux (Debian/Ubuntu)** | `sudo apt install build-essential curl wget file libssl-dev libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev` — and **`rpm`** if you want the `.rpm` bundle. (Fedora: the `dnf` `webkit2gtk4.1-devel`/`@development-tools` groups; Arch: `pacman` `webkit2gtk-4.1 base-devel`. See the [Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/#linux).) |
 
-**2. Install the Tauri CLI** (not bundled in this repo). Either add it to the project once:
+**2. The Tauri CLI is already a devDependency** (`@tauri-apps/cli@^2`), wired to the `tauri` script —
+so `npm install` is all you need, then use `npm run tauri <cmd>` (or `npx tauri <cmd>`).
 
-```bash
-npm install --save-dev @tauri-apps/cli@^2     # then use:  npx tauri <cmd>
-```
-
-…or install it globally via Cargo: `cargo install tauri-cli --version "^2"` (then `cargo tauri <cmd>`).
-Tip: add `"tauri": "tauri"` to `package.json` → `scripts` if you prefer `npm run tauri build`.
+If you'd rather have it globally: `cargo install tauri-cli --version "^2"` (then `cargo tauri <cmd>`).
 
 **3. (Windows / macOS only) Generate the platform icon set** — this repo ships only PNG icons, and the
 Windows/macOS installers need an `.ico`/`.icns`. Run once (uses a square ≥1024 px source PNG):
@@ -104,9 +125,9 @@ npx tauri icon path/to/icon.png   # writes icon.ico + icon.icns and updates taur
 
 ```bash
 npm install
-npx tauri build                              # bundles for THIS OS (runs the web build first)
+npm run tauri build                              # bundles for THIS OS (runs the web build first)
 # pick specific bundles, e.g. on Linux (omit rpm unless rpmbuild is installed — see Troubleshooting):
-npx tauri build --bundles deb,appimage
+npm run tauri build -- --bundles deb,appimage
 ```
 
 **Where the files land** — under `src-tauri/target/release/bundle/` (raw binary at
@@ -149,44 +170,48 @@ npm install
 npm run dev          # web app on http://localhost:5173
 npm run typecheck    # tsc --noEmit (strict)
 npm test             # vitest run — pure-engine unit tests
-npm run build        # production web build
+npm run test:watch   # vitest in watch mode
+npm run build        # production web build (typechecks first)
+npm run preview      # serve the built dist/ locally
 
-# Desktop (requires Rust toolchain + the Tauri CLI + platform prerequisites —
+# Desktop (requires the Rust toolchain + platform prerequisites —
 # see "Building for each platform" above):
-npx tauri dev
+npm run tauri dev
 ```
 
 ## Architecture at a glance
 
+> The full, annotated file tree is in **[CLAUDE.md](CLAUDE.md) → "Source Structure"**. This is the
+> orientation-level view.
+
 ```
 src/
-  engine/                  # framework-free domain logic (unit-tested)
+  engine/                  # framework-free domain logic (unit-tested, no React/DOM)
     viewport/transform.ts  # the ONLY place the world<->screen Y-flip lives
     snapping/snap.ts       # pure snap-to-grid quantization (world units)
-    geometry/              # path/winding math + the boolean engine
+    geometry/              # path/winding/bezier math, corners, blend, profiles
                            #   GeometryService.ts: the swappable interface
+                           #   geometryEngine.ts: the single swap point
                            #   PaperGeometryService.ts: live impl (Paper.js, curve-exact)
                            #   PolygonGeometryService.ts: test-only impl (flattens curves)
-  state/                   # Zustand stores
+  state/                   # Zustand stores (+ persistence lifecycle)
     viewportStore.ts       # zoom/pan/grid/theme — NOT undoable
-    documentStore.ts       # glyphs/layers — undoable via zundo
+    documentStore.ts       # glyphs/layers — plain data
+    history.ts             # PER-GLYPH undo/redo (custom, not zundo)
     editorStore.ts         # live ephemeral session state — NOT undoable
-    middleware/temporal.ts # typed hook over zundo's temporal store
-  storage/                 # StorageService + Local/Tauri adapters + factory
+  storage/                 # StorageService + Local/Tauri adapters + versioned file formats
   features/
-    canvas/                # viewport, grid, HUD, tool controller
-    tools/                 # pen, select, lasso, shapes — no React, no DOM
-    layers/                # LayersPanel, merge/flatten
-    glyphs/                # GlyphSidebar, thumbnails
-    clipboard/             # copy/cut/paste (layer-aware)
-    export/                # glyphToSvg, ExportService, ExportModal (bulk SVG)
-    project/               # portable .glphdrft project export/import (web/desktop seam)
-    settings/              # KeybindingsModal
+    canvas/                # viewport, tool controller, Stroke/Color panels, fill pipeline
+    tools/                 # pen, pencil, select, lasso, shapes, scissors/knife/eraser
+    layers/                # LayersPanel, Pathfinder UI, merge/flatten
+    glyphs/                # GlyphSidebar, thumbnails, glyph-set templates
+    clipboard/             # copy/cut/paste-in-place (layer-aware)
+    import/ export/        # SVG import; glyphToSvg + bulk export behind ExportService
+    project/               # portable .glphdrft export/import (web/desktop seam)
+    preview/ info/ settings/
   commands/                # registry.ts — single source of actions + keybinds
-  components/controls/     # small shared UI controls
-  types/                   # dependency-free shared types
-  constants/               # font metrics + defaults
-  styles/                  # theme.css (CSS-variable dark/light)
+  components/              # shared controls, menus, error boundary
+  types/ constants/ styles/ utils/
 src-tauri/                 # Tauri v2 desktop shell
 ```
 
@@ -202,10 +227,20 @@ src-tauri/                 # Tauri v2 desktop shell
    undo/redo history — so <kbd>Ctrl</kbd>+<kbd>Z</kbd> never undoes a pan or
    zoom. The document model is plain serializable data (no class instances),
    which is what makes snapshot history and cross-glyph paste-in-place reliable.
+   History is **per-glyph**, so an undo can never silently revert a glyph you
+   aren't looking at.
+
+3. **Geometry is a service, not the data model.** Paper.js never owns the scene
+   graph — the canonical glyph stays plain Zustand state rendered to native SVG,
+   and heavy vector math goes through `GeometryService`. Swapping the engine is a
+   one-line change in `engine/geometry/geometryEngine.ts`.
 
 ## Canvas controls
 
 - **Pan:** scroll/trackpad, <kbd>Space</kbd>+drag, or middle-mouse drag
-- **Zoom:** <kbd>Ctrl/Cmd</kbd>+scroll (or trackpad pinch) — zooms to cursor; <kbd>Ctrl/Cmd</kbd>+<kbd>0</kbd> fit, <kbd>Ctrl/Cmd</kbd>+<kbd>1</kbd> actual size
-- **Edit selection:** Arrow keys nudge (Shift = ×10), <kbd>Ctrl/Cmd</kbd>+<kbd>D</kbd> duplicate; flip H/V and reverse path from the right-click menu
-- **Reset view / theme / grid / snap:** the floating control panel
+- **Zoom:** <kbd>Ctrl/Cmd</kbd>+scroll (or trackpad pinch) — zooms to cursor; <kbd>Ctrl/Cmd</kbd>+<kbd>0</kbd> fit, <kbd>Ctrl/Cmd</kbd>+<kbd>1</kbd> actual size, <kbd>Ctrl/Cmd</kbd>+<kbd>2</kbd> zoom to selection
+- **Tools:** <kbd>V</kbd> select · <kbd>Q</kbd> lasso · <kbd>P</kbd> pen · <kbd>B</kbd> pencil · <kbd>C</kbd> scissors · <kbd>K</kbd> knife · <kbd>X</kbd> eraser · <kbd>M</kbd>/<kbd>E</kbd>/<kbd>L</kbd>/<kbd>G</kbd>/<kbd>T</kbd> shapes
+- **Edit selection:** Arrow keys nudge (Shift = ×10), <kbd>Ctrl/Cmd</kbd>+<kbd>D</kbd> duplicate, <kbd>Ctrl/Cmd</kbd>+<kbd>T</kbd> transform box; flip H/V and reverse path from the right-click menu
+- **View modes:** <kbd>Ctrl/Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd> toggles wireframe/outline; a "final" mode previews the exported look
+- **Grid, snap, onion skin, guides, themes:** the **View** and **Settings** top-bar menus
+- Every shortcut is rebindable in Settings → Keyboard shortcuts
