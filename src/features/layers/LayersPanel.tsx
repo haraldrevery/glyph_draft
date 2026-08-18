@@ -20,6 +20,7 @@ import {
 import { LayerRow, OP_LABEL, OP_SYMBOL, pairColor } from "./LayerRow";
 import { GroupRow } from "./GroupRow";
 import { groupMembers, selectionUnits, visibleRows, type SelectionUnit } from "./layerTree";
+import { useRowDrag } from "./useRowDrag";
 import { mergeLayers } from "./mergeLayers";
 import { layerColorMap } from "./layerColors";
 import { useEditorStore } from "../../state/editorStore";
@@ -105,6 +106,19 @@ export function LayersPanel() {
       disabled: !canDelete,
     },
   ];
+
+  // Drag-and-drop reordering. The hook only reports which row went where; every rule
+  // about what a drop MEANS lives in `moveUnitTo`.
+  const rowDrag = useRowDrag((dragId, targetId, position) =>
+    doc().moveUnitTo(dragId, targetId, position),
+  );
+  /** Drag-state classes for a row: the one being dragged, or the drop indicator. */
+  const dragClassFor = (id: string): string => {
+    const parts: string[] = [];
+    if (rowDrag.draggingId === id) parts.push("layer-row-dragging");
+    if (rowDrag.drop?.id === id) parts.push(`layer-row-drop-${rowDrag.drop.position}`);
+    return parts.join(" ");
+  };
 
   // The reorder buttons act on whatever the user last clicked: a folder row moves the
   // WHOLE group, a layer row moves just that layer. Without this, clicking a group and
@@ -283,6 +297,8 @@ export function LayersPanel() {
                   e.preventDefault();
                   ctxMenu.open(e.clientX, e.clientY, groupMenuItems(grp));
                 }}
+                dragProps={rowDrag.rowProps({ id: grp.id, isGroup: true })}
+                dragClass={dragClassFor(grp.id)}
               />
             );
           }
@@ -328,6 +344,8 @@ export function LayersPanel() {
                   ctxMenu.open(e.clientX, e.clientY, layerMenuItems(layer, effectiveIds));
                 }}
                 depth={row.depth}
+                dragProps={rowDrag.rowProps({ id: layer.id, isGroup: false })}
+                dragClass={dragClassFor(layer.id)}
               />
             );
           }

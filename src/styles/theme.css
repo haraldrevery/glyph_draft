@@ -1682,6 +1682,26 @@ body {
 }
 
 /* Per-layer color chip: matches the layer's paths + nodes on the canvas. */
+/* Drag-and-drop reordering feedback. The row keeps its normal look; the drop point
+   is an accent rule on the edge it would land at, and nesting highlights the folder.
+   Drawn with box-shadow so nothing reflows mid-drag (a border would shift every row). */
+.layer-row-dragging {
+  opacity: 0.4;
+}
+
+.layer-row-drop-above {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.layer-row-drop-below {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.layer-row-drop-inside {
+  background: color-mix(in srgb, var(--accent) 22%, var(--surface));
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 /* Group (folder) rows. Share .layer-row so the selected/active cues are identical;
    the disclosure triangle takes the slot the layer swatch occupies on a layer row, so
    names stay aligned down the column. Indentation is applied inline as padding-left

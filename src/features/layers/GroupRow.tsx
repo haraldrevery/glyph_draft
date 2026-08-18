@@ -21,6 +21,10 @@ interface Props {
   onToggleLock: () => void;
   onRename: (name: string) => void;
   onContextMenu: (e: MouseEvent) => void;
+  /** Drag-and-drop wiring from `useRowDrag` (pointer handlers + row id attributes). */
+  dragProps?: Record<string, unknown>;
+  /** Extra classes for the drag state (being dragged / drop indicator). */
+  dragClass?: string;
 }
 
 function Triangle({ open }: { open: boolean }) {
@@ -45,6 +49,8 @@ export function GroupRow({
   onToggleLock,
   onRename,
   onContextMenu,
+  dragProps,
+  dragClass = "",
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(group.name);
@@ -67,12 +73,14 @@ export function GroupRow({
   const cls =
     "layer-row layer-row-group" +
     (selected ? " layer-row-selected" : "") +
-    (active ? " layer-row-active" : "");
+    (active ? " layer-row-active" : "") +
+    (dragClass ? ` ${dragClass}` : "");
 
   return (
     <div
       className={cls}
       style={depth ? { paddingLeft: `calc(var(--space-2) + ${depth} * 12px)` } : undefined}
+      {...dragProps}
       onMouseDown={(e) => {
         if (e.button === 0) onSelect({ additive: e.ctrlKey || e.metaKey, range: e.shiftKey });
       }}
