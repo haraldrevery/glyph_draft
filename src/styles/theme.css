@@ -1682,6 +1682,45 @@ body {
 }
 
 /* Per-layer color chip: matches the layer's paths + nodes on the canvas. */
+/* Group (folder) rows. Share .layer-row so the selected/active cues are identical;
+   the disclosure triangle takes the slot the layer swatch occupies on a layer row, so
+   names stay aligned down the column. Indentation is applied inline as padding-left
+   (see LayerRow/GroupRow) — never margin, or the inset selection bar would stagger. */
+.layer-row-group {
+  font-weight: 500;
+}
+
+.layer-disclosure {
+  flex: none;
+  width: 10px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.layer-disclosure:hover {
+  color: var(--text);
+}
+
+.layer-name-group {
+  font-style: normal;
+}
+
+/* Marks a group whose contents render as ONE layer. */
+.layer-group-badge {
+  flex: none;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--accent);
+  opacity: 0.85;
+}
+
 .layer-swatch {
   flex: none;
   width: 10px;

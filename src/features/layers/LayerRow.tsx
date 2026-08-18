@@ -64,6 +64,8 @@ interface Props {
   onClearPair: () => void;
   onRename: (name: string) => void;
   onContextMenu: (e: MouseEvent) => void;
+  /** Nesting depth inside layer groups; 0 = top level. Indents the row. */
+  depth?: number;
 }
 
 function EyeIcon({ open }: { open: boolean }) {
@@ -102,6 +104,7 @@ export function LayerRow({
   onClearPair,
   onRename,
   onContextMenu,
+  depth = 0,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(layer.name);
@@ -129,6 +132,9 @@ export function LayerRow({
   return (
     <div
       className={cls}
+      // Indent with PADDING, not margin: the active/selected cue is an inset
+      // box-shadow bar at the row's left edge, which must stay flush with the panel.
+      style={depth ? { paddingLeft: `calc(var(--space-2) + ${depth} * 12px)` } : undefined}
       onMouseDown={(e) => {
         // Left button only — a right-click must not collapse a multi-selection
         // (the context menu preserves it; see LayersPanel.onContextMenu).

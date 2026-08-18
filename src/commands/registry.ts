@@ -192,7 +192,42 @@ const editCommands: Command[] = [
     isEnabled: edit.canExpandStrokes,
     isVisible: edit.canExpandStrokes,
   },
+  {
+    // Layer GROUP/UNGROUP. Layer ops are normally built inline in the Layers panel
+    // (they're parameterized by the clicked row), but a keyboard shortcut can only
+    // exist through this registry — `useCommandKeys` is the one global key handler.
+    // These stay parameter-free by reading `selectedLayerIds` themselves, exactly as
+    // the edit.* commands read `editorStore.selection`.
+    id: "layer.group",
+    label: "Group layers",
+    group: "edit",
+    defaultKeys: [{ key: "g", mod: true }],
+    run: () => {
+      const doc = useDocumentStore.getState();
+      doc.groupLayers(doc.selectedLayerIds);
+    },
+    isEnabled: () => useDocumentStore.getState().selectedLayerIds.length > 0,
+  },
+  {
+    id: "layer.ungroup",
+    label: "Ungroup",
+    group: "edit",
+    defaultKeys: [{ key: "g", mod: true, shift: true }],
+    run: () => {
+      const gid = activeGroupId();
+      if (gid) useDocumentStore.getState().ungroupGroup(gid);
+    },
+    isEnabled: () => activeGroupId() !== null,
+  },
 ];
+
+/** The group of the active layer, or null when it is not in one. */
+function activeGroupId(): string | null {
+  const s = useDocumentStore.getState();
+  const glyph = s.activeGlyphId ? s.glyphs[s.activeGlyphId] : null;
+  if (!glyph) return null;
+  return glyph.layers.find((l) => l.id === s.activeLayerId)?.groupId ?? null;
+}
 
 /** Arrow-key nudge of the selected anchors: 1 unit, or 10 with Shift. Generated so
  *  the four directions × two steps stay in sync. */

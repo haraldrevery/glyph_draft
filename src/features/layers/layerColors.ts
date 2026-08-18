@@ -26,7 +26,16 @@ export function layerColor(index: number): string {
   return PALETTE[((index % PALETTE.length) + PALETTE.length) % PALETTE.length]!;
 }
 
-/** Map each layer id to its color, assigned by position. Pass ids in stack order. */
+/**
+ * Map each layer id to its color, assigned by position. Pass ids in STACK order
+ * (`glyph.layers`), not panel-row order.
+ *
+ * All three call sites (the Layers panel swatch and the two `useGlyphContours` hooks)
+ * must pass the same ordering or the panel and the canvas would disagree about a
+ * layer's colour. Stack order is the one they can all reach without knowing about
+ * groups — and because a group's members are contiguous, rows adjacent in the panel
+ * still get adjacent colours.
+ */
 export function layerColorMap(layerIds: string[]): Map<string, string> {
   return new Map(layerIds.map((id, i) => [id, layerColor(i)]));
 }

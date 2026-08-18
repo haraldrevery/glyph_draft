@@ -811,6 +811,78 @@ describe("layer groups", () => {
     });
   });
 
+  describe("selectLayerRange with groups", () => {
+    it("a range that spans a COLLAPSED group takes all its members", () => {
+      seedLayers(["a", "b", "c", "d"]);
+      const gid = state().groupLayers(["b", "c"])!;
+      state().setGroupCollapsed(gid, true);
+      state().setActiveLayer("a");
+      state().selectLayerRange("d"); // a → (collapsed group) → d
+      expect(state().selectedLayerIds).toEqual(["a", "b", "c", "d"]);
+    });
+
+    it("selecting up to a collapsed group row grabs the whole group", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["b", "c"])!;
+      state().setGroupCollapsed(gid, true);
+      state().setActiveLayer("a");
+      state().selectLayerRange("b"); // "b" is inside the collapsed group row
+      expect(state().selectedLayerIds).toEqual(["a", "b", "c"]);
+    });
+
+    it("stays in stack order regardless of click direction", () => {
+      seedLayers(["a", "b", "c"]);
+      state().setActiveLayer("c");
+      state().selectLayerRange("a");
+      expect(state().selectedLayerIds).toEqual(["a", "b", "c"]);
+    });
+  });
+
+  describe("moveLayer with groups", () => {
+    it("moves within a group without leaving it", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      state().moveLayer("a", "up"); // a and b swap, both still in the group
+      expect(order()).toEqual(["b", "a", "c"]);
+      expect(groupOf("a")).toBe(gid);
+      expect(isContiguous(g(), gid)).toBe(true);
+    });
+
+    it("at the top edge, a further move POPS the layer out of the group", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      state().moveLayer("b", "up"); // b is the top member
+      expect(groupOf("b")).toBeUndefined();
+      expect(order()).toEqual(["a", "b", "c"]); // position unchanged, only the tag
+      expect(isContiguous(g(), gid)).toBe(true);
+    });
+
+    it("popping the last member dissolves the group", () => {
+      seedLayers(["a", "b"]);
+      const gid = state().groupLayers(["a"])!;
+      state().moveLayer("a", "up");
+      expect(findGroup(g(), gid)).toBeUndefined();
+      expect(g().layerGroups).toBeUndefined();
+    });
+
+    it("steps OVER a neighbouring group instead of into it", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["b", "c"])!;
+      state().moveLayer("a", "up"); // a must jump the whole group, not land inside
+      expect(order()).toEqual(["b", "c", "a"]);
+      expect(isContiguous(g(), gid)).toBe(true);
+      expect(groupOf("a")).toBeUndefined();
+    });
+
+    it("an ungrouped document behaves exactly as before", () => {
+      seedLayers(["a", "b", "c"]);
+      state().moveLayer("a", "up");
+      expect(order()).toEqual(["b", "a", "c"]);
+      state().moveLayer("a", "down");
+      expect(order()).toEqual(["a", "b", "c"]);
+    });
+  });
+
   describe("moveGroup", () => {
     it("moves the whole run past a sibling layer", () => {
       seedLayers(["a", "b", "c"]);

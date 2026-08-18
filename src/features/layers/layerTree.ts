@@ -198,21 +198,6 @@ export function visibleRows(glyph: Glyph): TreeRow[] {
   return rows;
 }
 
-/**
- * The layers in panel row order, TOP-DOWN, ignoring collapse — the ordering used to
- * assign per-layer editing colours. Independent of collapse state so a colour never
- * changes just because a folder was folded.
- */
-export function layersInTreeOrder(glyph: Glyph): Layer[] {
-  const expanded: Glyph = {
-    ...glyph,
-    layerGroups: groupsOf(glyph).map((g) => ({ ...g, collapsed: false })),
-  };
-  return visibleRows(expanded)
-    .map((r) => r.layer)
-    .filter((l): l is Layer => !!l);
-}
-
 /** Layer ids whose rows are currently visible (not inside a collapsed group). */
 export function visibleLayerIds(glyph: Glyph): string[] {
   return glyph.layers.filter((l) => !underCollapsed(glyph, l.groupId)).map((l) => l.id);

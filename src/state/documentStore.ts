@@ -6,7 +6,7 @@ import { DEFAULT_STROKE } from "../types/geometry";
 import { createId } from "../utils/id";
 import { extractContours, joinContours, splitContourAt, splitContourAtPoints } from "../engine/geometry/topology";
 import { convertPoint } from "../engine/geometry/nodeHandles";
-import { ancestors, findGroup, groupRange } from "../features/layers/layerTree";
+import { ancestors, findGroup, groupMembers, groupRange, visibleRows } from "../features/layers/layerTree";
 import { DEFAULT_METRICS } from "../constants/metrics";
 import {
   cloneLayer,
@@ -201,6 +201,9 @@ interface DocumentState {
   /** Render the group's contents as ONE layer (Stage 4). Stored now so the flag
    *  round-trips through save/load before anything consumes it. */
   setGroupRenderAsOne: (groupId: string, renderAsOne: boolean) => void;
+  /** Select every layer in a group (Ctrl/Cmd+click adds to the current selection).
+   *  The group's lowest member becomes active so new geometry lands inside it. */
+  selectGroup: (groupId: string, additive?: boolean) => void;
   /** Move a whole group past its adjacent SIBLING (same parent). A move that would
    *  cross a parent boundary is a no-op — re-parenting is a drag-and-drop concern. */
   moveGroup: (groupId: string, direction: "up" | "down") => void;
@@ -1091,15 +1094,33 @@ export const useDocumentStore = create<DocumentState>()(
           if (!glyph || !findLayer(glyph, layerId)) return;
           const anchorId = s.activeLayerId;
           const anchorIdx = glyph.layers.findIndex((l) => l.id === anchorId);
-          const targetIdx = glyph.layers.findIndex((l) => l.id === layerId);
           // No valid anchor → behave like a plain activation of the clicked layer.
           if (anchorIdx < 0) {
             set({ activeLayerId: layerId, selectedLayerIds: [layerId] });
             return;
           }
-          const lo = Math.min(anchorIdx, targetIdx);
-          const hi = Math.max(anchorIdx, targetIdx);
-          const selectedLayerIds = glyph.layers.slice(lo, hi + 1).map((l) => l.id);
+          // Range over the PANEL's row order, not the raw array: with groups the two
+          // differ (a collapsed group hides rows), and selecting a layer the user
+          // cannot see would be a surprise. Layers inside a collapsed group are
+          // therefore skipped, and a group row contributes all of its members.
+          const rows = visibleRows(glyph);
+          const rowIds: string[][] = rows.map((r) =>
+            r.group ? groupMembers(glyph, r.group.id).map((l) => l.id) : [r.layer!.id],
+          );
+          const rowOf = (id: string): number =>
+            rowIds.findIndex((ids) => ids.includes(id));
+          const a = rowOf(anchorId!);
+          const b = rowOf(layerId);
+          if (a < 0 || b < 0) {
+            set({ activeLayerId: layerId, selectedLayerIds: [layerId] });
+            return;
+          }
+          const from = Math.min(a, b);
+          const to = Math.max(a, b);
+          // Keep the result in STACK order (bottom-to-top), matching `glyph.layers`
+          // and the pre-groups behaviour — `visibleRows` is top-down for display only.
+          const picked = new Set(rowIds.slice(from, to + 1).flat());
+          const selectedLayerIds = glyph.layers.filter((l) => picked.has(l.id)).map((l) => l.id);
           // Keep the anchor active so repeated Shift+clicks extend from the same row.
           set({ selectedLayerIds });
         },
@@ -1377,6 +1398,19 @@ export const useDocumentStore = create<DocumentState>()(
             groups.map((g) => (g.id === groupId ? { ...g, renderAsOne } : g)),
           ),
 
+        selectGroup: (groupId, additive = false) => {
+          const s = get();
+          const glyph = s.activeGlyphId ? s.glyphs[s.activeGlyphId] : null;
+          if (!glyph) return;
+          const ids = groupMembers(glyph, groupId).map((l) => l.id);
+          if (ids.length === 0) return;
+          const selectedLayerIds = additive
+            ? [...new Set([...s.selectedLayerIds, ...ids])]
+            : ids;
+          // The lowest member becomes active, so new geometry lands inside the group.
+          set({ selectedLayerIds, activeLayerId: ids[0]! });
+        },
+
         moveGroup: (groupId, direction) => {
           const s = get();
           if (!s.activeGlyphId) return;
@@ -1422,8 +1456,51 @@ export const useDocumentStore = create<DocumentState>()(
           if (!glyph) return;
           const at = glyph.layers.findIndex((l) => l.id === layerId);
           if (at < 0) return;
+          const self = glyph.layers[at]!;
+          const gid = self.groupId;
+
+          // Leaving a group: at the edge of its own group's run, a further step OUT
+          // pops the layer out of the folder instead of dragging an outsider into the
+          // run (which would break CONTIGUITY). Its array position is already correct,
+          // so only the tag changes — one press to leave, another to actually move.
+          if (gid) {
+            const range = groupRange(glyph, gid);
+            if (range) {
+              const atEdge = direction === "up" ? at === range[1] : at === range[0];
+              if (atEdge) {
+                const up = findGroup(glyph, gid)?.parentId;
+                const layers = glyph.layers.map((l) => {
+                  if (l.id !== layerId) return l;
+                  const next = { ...l };
+                  if (up) next.groupId = up;
+                  else delete next.groupId;
+                  return next;
+                });
+                set({
+                  glyphs: {
+                    ...s.glyphs,
+                    [glyph.id]: pruneEmptyGroups({ ...glyph, layers }),
+                  },
+                });
+                return;
+              }
+            }
+          }
+
           // Array order is bottom-to-top, so "up" (toward the top) is +1.
-          const to = direction === "up" ? at + 1 : at - 1;
+          const probe = direction === "up" ? at + 1 : at - 1;
+          const neighbour = glyph.layers[probe];
+          if (!neighbour) return;
+
+          // A neighbour inside a group we are NOT in must be stepped OVER as a whole
+          // block — swapping into it would wedge an outsider inside its run.
+          let to = probe;
+          if (neighbour.groupId && neighbour.groupId !== gid) {
+            const sibId = siblingAncestor(glyph, neighbour.groupId, gid);
+            const r = sibId ? groupRange(glyph, sibId) : null;
+            if (r) to = direction === "up" ? r[1] : r[0];
+          }
+
           const layers = moveInArray(glyph.layers, at, to);
           if (layers === glyph.layers) return;
           set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });

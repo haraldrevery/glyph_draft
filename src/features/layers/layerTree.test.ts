@@ -9,7 +9,6 @@ import {
   groupMembers,
   groupRange,
   isContiguous,
-  layersInTreeOrder,
   visibleRows,
 } from "./layerTree";
 import type { Glyph, Layer, LayerGroup } from "../../types/document";
@@ -187,24 +186,5 @@ describe("visibleRows", () => {
   it("keeps a childless group visible in the list", () => {
     const g = glyph([L("a")], [G("EMPTY")]);
     expect(ids(g)).toContain("[EMPTY]");
-  });
-});
-
-describe("layersInTreeOrder", () => {
-  it("ignores collapse, so colours don't shift when a folder is folded", () => {
-    const open = nested();
-    const folded = glyph(
-      [L("base"), L("x1", "X"), L("x2", "X"), L("top")],
-      [G("X", undefined, { collapsed: true })],
-    );
-    expect(layersInTreeOrder(open).map((l) => l.id)).toEqual(
-      layersInTreeOrder(folded).map((l) => l.id),
-    );
-  });
-
-  it("covers every layer exactly once", () => {
-    const g = deep();
-    const out = layersInTreeOrder(g).map((l) => l.id).sort();
-    expect(out).toEqual(g.layers.map((l) => l.id).sort());
   });
 });
