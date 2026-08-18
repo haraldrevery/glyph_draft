@@ -86,12 +86,12 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
         }
         result = await service.exportSingle({
           name: exportFileName(activeGlyph.codepoint),
-          content: glyphToSvg(activeGlyph, DEFAULT_METRICS, scalePct, style, mergeHalftones, silhouette),
+          content: glyphToSvg(activeGlyph, DEFAULT_METRICS, { scalePct, style, mergeHalftones, silhouette }),
         });
       } else {
         const files = glyphs.map((g) => ({
           name: exportFileName(g.codepoint),
-          content: glyphToSvg(g, DEFAULT_METRICS, scalePct, style, mergeHalftones, silhouette),
+          content: glyphToSvg(g, DEFAULT_METRICS, { scalePct, style, mergeHalftones, silhouette }),
         }));
         const tag = [styleTag(style), silhouette ? "silhouette" : ""].filter(Boolean).join("-");
         result = await service.exportGlyphs(files, {

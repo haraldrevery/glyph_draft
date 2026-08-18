@@ -196,14 +196,14 @@ class StubGeom implements GeometryService {
 describe("buildFillGroups — mergeHalftones", () => {
   it("flag OFF: each halftone path expands on its own (no combining)", () => {
     const g = new StubGeom();
-    buildFillGroups([{ id: "L", contours: [htLine("h1"), htLine("h2")] }], [], g, false);
+    buildFillGroups([{ id: "L", contours: [htLine("h1"), htLine("h2")] }], [], g, { mergeHalftones: false });
     expect(g.groupCalls).toHaveLength(0);
     expect(g.strokeCalls).toHaveLength(2);
   });
 
   it("flag ON: two identical-style halftone paths render as ONE combined group", () => {
     const g = new StubGeom();
-    const groups = buildFillGroups([{ id: "L", contours: [htLine("h1"), htLine("h2")] }], [], g, true);
+    const groups = buildFillGroups([{ id: "L", contours: [htLine("h1"), htLine("h2")] }], [], g, { mergeHalftones: true });
     expect(g.groupCalls).toHaveLength(1);
     expect(g.groupCalls[0]).toHaveLength(2); // both contours merged
     expect(g.strokeCalls).toHaveLength(0); // neither went through per-path expand
@@ -212,14 +212,14 @@ describe("buildFillGroups — mergeHalftones", () => {
 
   it("flag ON: different halftone styles do NOT merge", () => {
     const g = new StubGeom();
-    buildFillGroups([{ id: "L", contours: [htLine("h1", 10), htLine("h2", 20)] }], [], g, true);
+    buildFillGroups([{ id: "L", contours: [htLine("h1", 10), htLine("h2", 20)] }], [], g, { mergeHalftones: true });
     expect(g.groupCalls).toHaveLength(0); // two buckets of size 1 → no combine
     expect(g.strokeCalls).toHaveLength(2); // each falls back to per-path expand
   });
 
   it("flag ON: a lone halftone path falls back to per-path expand", () => {
     const g = new StubGeom();
-    buildFillGroups([{ id: "L", contours: [htLine("h1")] }], [], g, true);
+    buildFillGroups([{ id: "L", contours: [htLine("h1")] }], [], g, { mergeHalftones: true });
     expect(g.groupCalls).toHaveLength(0);
     expect(g.strokeCalls).toHaveLength(1);
   });

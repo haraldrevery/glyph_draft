@@ -43,7 +43,7 @@ export function mergeLayers(layerIds: string[]): void {
     fillLayers,
     pairs,
     getGeometryService(),
-    useViewportStore.getState().mergeHalftones,
+    { mergeHalftones: useViewportStore.getState().mergeHalftones },
   );
   const contours = groups.flatMap((g) => g.contours);
 

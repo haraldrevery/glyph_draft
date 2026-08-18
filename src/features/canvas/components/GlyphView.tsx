@@ -40,7 +40,7 @@ export const GlyphView = memo(function GlyphView() {
   // Skip the boolean/stroke geometry entirely when fills are hidden (outline mode),
   // so heavy editing stays light.
   const fills = useMemo(
-    () => (showFills ? buildFillGroups(layers, pairs, getGeometryService(), mergeHalftones) : []),
+    () => (showFills ? buildFillGroups(layers, pairs, getGeometryService(), { mergeHalftones }) : []),
     [layers, pairs, showFills, mergeHalftones],
   );
 

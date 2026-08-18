@@ -68,17 +68,17 @@ describe("glyphToSvg", () => {
   });
 
   it("scales the frame uniformly with the artwork", () => {
-    const svg = glyphToSvg(glyph([layer("LA", [BIG])]), DEFAULT_METRICS, 50);
+    const svg = glyphToSvg(glyph([layer("LA", [BIG])]), DEFAULT_METRICS, { scalePct: 50 });
     expect(svg).toContain('viewBox="0 -400 300 500"');
   });
 
   it("flips Y world->SVG so the glyph is upright (scale 1 -1 at 100%)", () => {
-    const svg = glyphToSvg(glyph([layer("LA", [BIG])]), DEFAULT_METRICS, 100);
+    const svg = glyphToSvg(glyph([layer("LA", [BIG])]), DEFAULT_METRICS, { scalePct: 100 });
     expect(svg).toContain("transform=\"scale(1 -1)\"");
   });
 
   it("applies the universal scale % to the geometry transform", () => {
-    const svg = glyphToSvg(glyph([layer("LA", [BIG])]), DEFAULT_METRICS, 50);
+    const svg = glyphToSvg(glyph([layer("LA", [BIG])]), DEFAULT_METRICS, { scalePct: 50 });
     expect(svg).toContain("transform=\"scale(0.5 -0.5)\"");
   });
 
@@ -121,7 +121,7 @@ describe("glyphToSvg", () => {
     };
     const g = glyph([layer("LA", [grad])]);
     const colored = glyphToSvg(g, DEFAULT_METRICS);
-    const silh = glyphToSvg(g, DEFAULT_METRICS, 100, undefined, false, true);
+    const silh = glyphToSvg(g, DEFAULT_METRICS, { silhouette: true });
     expect(silh).toContain('fill="#000000"');
     expect(silh).not.toContain("<defs>");
     expect(silh).not.toContain("<linearGradient");

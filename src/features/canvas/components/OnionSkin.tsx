@@ -49,7 +49,7 @@ function OnionGlyph({ glyph, renderSvg }: { glyph: Glyph; renderSvg: boolean }) 
   // The true rendered output as a single monochrome silhouette (paint ignored).
   const renderedD = useMemo(() => {
     if (!renderSvg) return null;
-    return glyphFillGroups(glyph, getGeometryService(), mergeHalftones)
+    return glyphFillGroups(glyph, getGeometryService(), { mergeHalftones })
       .map((g) => contoursToPath(g.contours))
       .filter(Boolean)
       .join(" ");

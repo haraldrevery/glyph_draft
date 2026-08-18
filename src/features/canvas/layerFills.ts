@@ -36,6 +36,28 @@ export interface FillLayer {
   baked?: boolean;
 }
 
+/**
+ * Render-affecting options threaded through the whole fill pipeline
+ * (`glyphFillGroups` → `buildFillGroups` → `renderContours`), and on to the export.
+ *
+ * These are GLOBAL switches that change the geometry a glyph renders to, as opposed to
+ * per-contour style, which lives on the model. They travel as one object rather than as
+ * positional booleans: the chain already carried two adjacent booleans at the export end
+ * (`mergeHalftones`, `silhouette`), where a swapped pair type-checks silently. Adding a
+ * new switch means adding a field here — every consumer keeps compiling, and the
+ * identity-keyed caches pick it up automatically via `renderKey`.
+ */
+export interface RenderOptions {
+  /** Render same-style halftone paths in a layer as ONE continuous tone (settings v6).
+   *  Off ⇒ byte-identical to the pre-merge pipeline. */
+  mergeHalftones?: boolean;
+}
+
+/** Stable cache key for a RenderOptions value. Extend alongside the interface. */
+function renderKey(opts: RenderOptions): string {
+  return opts.mergeHalftones ? "m1" : "m0";
+}
+
 export interface FillGroup {
   /** Stable React key: a plain layer id, a `layerId#paint` id, or a boolean pair id. */
   id: string;
@@ -168,7 +190,7 @@ function strokeOutlinePaint(c: Contour): Paint | undefined {
  * so abutting paths read as a single continuous tone. A lone halftone path, and
  * everything else, renders exactly as with the flag off (default-off ⇒ byte-identical).
  */
-function renderContours(layer: FillLayer, geom: GeometryService, mergeHalftones: boolean): Contour[] {
+function renderContours(layer: FillLayer, geom: GeometryService, opts: RenderOptions): Contour[] {
   // A baked (merged) layer is already final geometry: render it verbatim so its
   // holes (CCW) survive nonzero fill — do NOT force-CW or re-expand strokes.
   if (layer.baked) return layer.contours;
@@ -177,7 +199,7 @@ function renderContours(layer: FillLayer, geom: GeometryService, mergeHalftones:
   // Pre-pass: bucket same-style halftone paths; a bucket of ≥2 renders as one combined
   // halftone, and its source contours are skipped in the main loop below.
   const merged = new Set<string>();
-  if (mergeHalftones) {
+  if (opts.mergeHalftones) {
     const buckets = new Map<string, { raws: Contour[]; cs: Contour[] }>();
     for (const raw of layer.contours) {
       if (raw.points.length < 2 || !isHalftone(raw)) continue;
@@ -227,7 +249,7 @@ export function buildFillGroups(
   layers: FillLayer[],
   pairs: BooleanPair[],
   geom: GeometryService,
-  mergeHalftones = false,
+  opts: RenderOptions = {},
 ): FillGroup[] {
   const indexById = new Map(layers.map((l, i) => [l.id, i] as const));
 
@@ -236,7 +258,7 @@ export function buildFillGroups(
   const rendered = (layer: FillLayer): Contour[] => {
     let r = renderedCache.get(layer.id);
     if (!r) {
-      r = renderContours(layer, geom, mergeHalftones);
+      r = renderContours(layer, geom, opts);
       renderedCache.set(layer.id, r);
     }
     return r;
@@ -283,7 +305,7 @@ export function buildFillGroups(
         // apply, per-contour paint splits — so blend honours outlined/multi-path layers.
         seq.forEach((step, k) => {
           const stepId = `${pair.id}#b${k}`;
-          groups.push(...groupByPaint(stepId, renderContours({ id: stepId, contours: step }, geom, mergeHalftones)));
+          groups.push(...groupByPaint(stepId, renderContours({ id: stepId, contours: step }, geom, opts)));
         });
       } else {
         groups.push(...groupByPaint(lower.id, rendered(lower)));
@@ -318,24 +340,33 @@ export function buildFillGroups(
  * underlying glyph data hasn't changed, so the heavy stroke/boolean geometry is reused.
  * The WeakMap auto-evicts replaced glyphs. (Callers treat the groups as read-only.)
  *
- * The cache is keyed by the `mergeHalftones` flag too (two WeakMaps), so toggling that
- * setting never returns a stale cached build for an unchanged glyph.
+ * The cache is keyed by the RenderOptions too (one WeakMap per distinct `renderKey`),
+ * so toggling a render switch never returns a stale cached build for an unchanged glyph.
  */
-const glyphFillCache = new WeakMap<Glyph, FillGroup[]>();
-const glyphFillCacheMerged = new WeakMap<Glyph, FillGroup[]>();
+const glyphFillCaches = new Map<string, WeakMap<Glyph, FillGroup[]>>();
+
+function cacheFor(opts: RenderOptions): WeakMap<Glyph, FillGroup[]> {
+  const k = renderKey(opts);
+  let c = glyphFillCaches.get(k);
+  if (!c) {
+    c = new WeakMap<Glyph, FillGroup[]>();
+    glyphFillCaches.set(k, c);
+  }
+  return c;
+}
 
 export function glyphFillGroups(
   glyph: Glyph,
   geom: GeometryService,
-  mergeHalftones = false,
+  opts: RenderOptions = {},
 ): FillGroup[] {
-  const cache = mergeHalftones ? glyphFillCacheMerged : glyphFillCache;
+  const cache = cacheFor(opts);
   const cached = cache.get(glyph);
   if (cached) return cached;
   const layers: FillLayer[] = glyph.layers
     .filter((l) => l.visible)
     .map((l) => ({ id: l.id, contours: l.contours, ...(l.baked ? { baked: true } : {}) }));
-  const groups = buildFillGroups(layers, glyph.booleanPairs ?? [], geom, mergeHalftones);
+  const groups = buildFillGroups(layers, glyph.booleanPairs ?? [], geom, opts);
   cache.set(glyph, groups);
   return groups;
 }
