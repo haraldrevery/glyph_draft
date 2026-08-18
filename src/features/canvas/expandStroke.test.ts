@@ -3,6 +3,8 @@ import { useDocumentStore } from "../../state/documentStore";
 import { useHistoryStore } from "../../state/history";
 import { useEditorStore } from "../../state/editorStore";
 import { canExpandStrokes, expandSelectedStrokes } from "./editActions";
+import { buildFillGroups } from "./layerFills";
+import { getGeometryService } from "../../engine/geometry/geometryEngine";
 import type { Glyph, Layer } from "../../types/document";
 import type { Contour, StrokeStyle } from "../../types/geometry";
 
@@ -56,6 +58,55 @@ function selectNode(layerId: string, contourId: string, pointId: string): void {
 }
 
 const glyph = () => useDocumentStore.getState().glyphs["G"]!;
+
+describe("expandSelectedStrokes + path corners", () => {
+  // renderContours rounds a path's corners BEFORE expanding its stroke, so the
+  // canvas shows a filleted outline. "Expand stroke" must bake exactly what the
+  // canvas draws — it used to expand the RAW contour, so a corner-styled path
+  // rendered rounded but baked (and aligned) sharp.
+  const ROUNDED = { type: "round" as const, radius: 30 };
+
+  /** Flattened outline coordinates, rounded to kill float noise. */
+  const coords = (cs: Contour[]): string[] =>
+    cs.flatMap((c) => c.points.map((p) => `${p.x.toFixed(3)},${p.y.toFixed(3)}`));
+
+  /** What the CANVAS renders for a one-layer glyph — the reference geometry. */
+  const rendered = (c: Contour): string[] =>
+    coords(
+      buildFillGroups([{ id: "L0", contours: [c] }], [], getGeometryService()).flatMap((g) => g.contours),
+    );
+
+  it("bakes the same outline the canvas renders", () => {
+    const c: Contour = { ...square("s", STROKE), corner: ROUNDED };
+    seed([c]);
+    selectNode("L0", "s", "s_p0");
+    expandSelectedStrokes();
+
+    const baked = glyph().layers.find((l) => l.baked)!;
+    expect(coords(baked.contours)).toEqual(rendered(c));
+  });
+
+  it("actually rounds — the baked outline differs from the sharp one", () => {
+    // Guards the test above from passing vacuously if corners stopped applying
+    // on BOTH sides. The sharp outline runs into the corner at (0,-10); the
+    // 30u fillet cuts that away.
+    const sharp = square("s", STROKE);
+    const withCorner: Contour = { ...sharp, corner: ROUNDED };
+    expect(rendered(withCorner)).not.toEqual(rendered(sharp));
+    expect(rendered(sharp)).toContain("0.000,-10.000");
+    expect(rendered(withCorner)).not.toContain("0.000,-10.000");
+  });
+
+  it("leaves a corner-less path untouched", () => {
+    const c = square("s", STROKE);
+    seed([c]);
+    selectNode("L0", "s", "s_p0");
+    expandSelectedStrokes();
+
+    const baked = glyph().layers.find((l) => l.baked)!;
+    expect(coords(baked.contours)).toEqual(rendered(c));
+  });
+});
 
 describe("expandSelectedStrokes", () => {
   beforeEach(() => seed([square("s", STROKE)]));

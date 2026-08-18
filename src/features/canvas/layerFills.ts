@@ -2,7 +2,7 @@ import { DEFAULT_HALFTONE, type Contour, type GradientFill, type Paint } from ".
 import type { BooleanPair, Glyph } from "../../types/document";
 import type { GeometryService } from "../../engine/geometry/GeometryService";
 import { ensureWinding } from "../../engine/geometry/path";
-import { roundCorners } from "../../engine/geometry/corners";
+import { withCorners } from "../../engine/geometry/corners";
 import { blendContours } from "../../engine/geometry/blend";
 
 /** Default in-between steps for a Blend pair when the UI hasn't set one. */
@@ -181,7 +181,7 @@ function renderContours(layer: FillLayer, geom: GeometryService, mergeHalftones:
     const buckets = new Map<string, { raws: Contour[]; cs: Contour[] }>();
     for (const raw of layer.contours) {
       if (raw.points.length < 2 || !isHalftone(raw)) continue;
-      const c = raw.corner ? roundCorners(raw, raw.corner) : raw;
+      const c = withCorners(raw);
       const k = halftoneKey(c);
       const b = buckets.get(k);
       if (b) {
@@ -204,7 +204,7 @@ function renderContours(layer: FillLayer, geom: GeometryService, mergeHalftones:
     if (raw.points.length < 2 || merged.has(raw.id)) continue;
     // Non-destructive PATH-corner rounding (round/chamfer/inverted) runs FIRST, so the
     // rounded centerline feeds stroke expansion and the fill alike. No-op without it.
-    const c = raw.corner ? roundCorners(raw, raw.corner) : raw;
+    const c = withCorners(raw);
     // Fill and stroke are INDEPENDENT (a closed path can have both). `filled` defaults to
     // the legacy rule (closed, unstroked, not Transparent) so old saves are byte-identical.
     const isFilled = c.filled ?? (c.closed && !c.stroke && c.paint?.fill !== "none");

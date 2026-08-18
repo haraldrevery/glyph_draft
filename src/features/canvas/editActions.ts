@@ -11,6 +11,7 @@ import {
 import { reverseContour } from "../../engine/geometry/path";
 import { contourBounds, alignDeltas, type AlignType, type BBox } from "../../engine/geometry/align";
 import { getGeometryService } from "../../engine/geometry/geometryEngine";
+import { withCorners } from "../../engine/geometry/corners";
 import type { Contour } from "../../types/geometry";
 import type { Glyph } from "../../types/document";
 
@@ -231,10 +232,13 @@ export function expandSelectedStrokes(): void {
   for (const r of selectedContourRefs()) {
     const layer = glyph.layers.find((l) => l.id === r.layerId);
     if (!layer || layer.locked) continue;
-    const c = layer.contours.find((ct) => ct.id === r.contourId);
-    if (!c || !c.stroke) continue;
+    const raw = layer.contours.find((ct) => ct.id === r.contourId);
+    if (!raw || !raw.stroke) continue;
+    // Round the path's corners FIRST, exactly like renderContours — otherwise a
+    // corner-styled path bakes sharp while the canvas shows it filleted.
+    const c = withCorners(raw);
     // Carry the path's paint onto each outline piece, exactly like renderContours.
-    for (const o of geom.expandStroke(c, c.stroke)) {
+    for (const o of geom.expandStroke(c, raw.stroke)) {
       expanded.push(c.paint ? { ...o, paint: c.paint } : o);
     }
     removeRefs.push({ layerId: r.layerId, contourId: r.contourId });
@@ -262,7 +266,10 @@ function unionBBox(a: BBox, b: BBox): BBox {
 /** A path's bbox for alignment: by its NODES (skeleton), or — in "outline" mode — by
  *  its own expanded-stroke outline (the visible filled shape). An unstroked path, or a
  *  stroke that fails to expand, falls back to the node bounds. */
-function pathBounds(c: Contour): BBox | null {
+function pathBounds(raw: Contour): BBox | null {
+  // Same corner pre-pass as renderContours, so "align by outline" measures the
+  // shape the user actually sees.
+  const c = withCorners(raw);
   if (useViewportStore.getState().alignMode === "outline" && c.stroke) {
     let acc: BBox | null = null;
     for (const o of getGeometryService().expandStroke(c, c.stroke)) {

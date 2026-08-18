@@ -134,3 +134,16 @@ export function roundCorners(contour: Contour, style: CornerStyle): Contour {
   cache.set(contour, { style, result });
   return result;
 }
+
+/**
+ * Apply a contour's OWN corner treatment, if it has one.
+ *
+ * This is the single place that decides whether corner rounding applies. Use it
+ * everywhere a contour is about to be rendered, stroke-expanded or measured, so the
+ * canvas, the baked "Expand stroke" outline and the outline-mode align bounds cannot
+ * diverge. (They did: renderContours rounded first while editActions expanded the raw
+ * contour, so a corner-styled path rendered rounded but baked and aligned sharp.)
+ */
+export function withCorners(contour: Contour): Contour {
+  return contour.corner ? roundCorners(contour, contour.corner) : contour;
+}
