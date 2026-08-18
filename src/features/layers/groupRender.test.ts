@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   bakeContours,
-  buildFillGroups,
+  buildGlyphFills,
   flattenRenderGroups,
   glyphFillGroups,
   type FillLayer,
@@ -141,17 +141,35 @@ describe("render-as-one changes what the pipeline emits", () => {
     );
   });
 
-  it("the export agrees with the canvas pipeline", () => {
+  it("the canvas and the export produce the same fills", () => {
+    // glyphFillGroups (thumbnails/preview/export) and buildGlyphFills (the canvas,
+    // which needs live drag overrides) must agree. Both go through the one shared
+    // entry point, which is what stops the canvas showing ungrouped fills.
     const g = overlapping(true);
     const viaGlyph = glyphFillGroups(g, geom());
-    const viaBuild = buildFillGroups(
-      flattenRenderGroups(fillLayers(g), g.layerGroups!, [], geom()),
+    const viaCanvas = buildGlyphFills(fillLayers(g), g.layerGroups!, [], geom());
+    expect(viaCanvas.map((x) => x.id)).toEqual(viaGlyph.map((x) => x.id));
+    expect(viaCanvas.map((x) => x.contours.length)).toEqual(
+      viaGlyph.map((x) => x.contours.length),
+    );
+  });
+
+  it("the canvas path really does collapse the group", () => {
+    // Guards the above from passing because BOTH forgot to flatten.
+    const fused = buildGlyphFills(
+      fillLayers(overlapping(true)),
+      overlapping(true).layerGroups!,
       [],
       geom(),
     );
-    expect(viaBuild.map((x) => x.contours.length)).toEqual(
-      viaGlyph.map((x) => x.contours.length),
+    const separate = buildGlyphFills(
+      fillLayers(overlapping(false)),
+      overlapping(false).layerGroups!,
+      [],
+      geom(),
     );
+    expect(fused).toHaveLength(1);
+    expect(separate).toHaveLength(2);
   });
 });
 

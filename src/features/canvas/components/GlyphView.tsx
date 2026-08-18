@@ -1,7 +1,7 @@
 import { memo, useMemo } from "react";
 import { contourToPath, contoursToPath } from "../../../engine/geometry/path";
 import { getGeometryService } from "../../../engine/geometry/geometryEngine";
-import { buildFillGroups, flattenRenderGroups } from "../layerFills";
+import { buildGlyphFills } from "../layerFills";
 import { linearGradientSpec, gradientId } from "../fillPaint";
 import { useVisibleRenderLayers } from "../useGlyphContours";
 import { useBooleanPairs, useLayerGroups } from "../../../state/documentStore";
@@ -41,22 +41,16 @@ export const GlyphView = memo(function GlyphView() {
   // Skip the boolean/stroke geometry entirely when fills are hidden (outline mode),
   // so heavy editing stays light.
   //
-  // NOTE: this deliberately calls `buildFillGroups` rather than `glyphFillGroups` (it
-  // needs the live drag overrides), so the render-as-one group pre-pass has to be
-  // applied HERE too — doing it only inside `glyphFillGroups` would fix the export,
-  // thumbnails and preview while leaving the canvas showing ungrouped fills. It runs
-  // inside this memo, so a group is not re-baked on every render.
-  const fills = useMemo(() => {
-    if (!showFills) return [];
-    const geom = getGeometryService();
-    const opts = { mergeHalftones };
-    return buildFillGroups(
-      flattenRenderGroups(layers, groups, pairs, geom, opts),
-      pairs,
-      geom,
-      opts,
-    );
-  }, [layers, groups, pairs, showFills, mergeHalftones]);
+  // `buildGlyphFills` (not the cached `glyphFillGroups`) because the canvas needs the
+  // live drag overrides in `layers`. It is the shared entry point that applies the
+  // render-as-one group pre-pass, so the canvas and the export cannot diverge.
+  const fills = useMemo(
+    () =>
+      showFills
+        ? buildGlyphFills(layers, groups, pairs, getGeometryService(), { mergeHalftones })
+        : [],
+    [layers, groups, pairs, showFills, mergeHalftones],
+  );
 
   const pairedLayerIds = useMemo(() => {
     const set = new Set<string>();

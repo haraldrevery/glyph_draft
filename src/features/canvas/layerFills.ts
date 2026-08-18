@@ -359,6 +359,34 @@ function cacheFor(opts: RenderOptions): WeakMap<Glyph, FillGroup[]> {
   return c;
 }
 
+/**
+ * Fills for a set of visible layers, honouring layer GROUPS.
+ *
+ * The ONE entry point for "layers → fills": it applies the render-as-one group
+ * pre-pass and then the normal pipeline. Both consumers go through it — the cached
+ * whole-glyph path (`glyphFillGroups`, used by thumbnails/preview/export) and the
+ * canvas (`GlyphView`, which needs live drag overrides so it cannot use the cache).
+ *
+ * Keeping this in one function is deliberate: when the flatten was applied separately
+ * at each call site, forgetting one would have left the canvas showing ungrouped fills
+ * while the export showed grouped ones — a divergence no unit test would catch, since
+ * the canvas path is a React component.
+ */
+export function buildGlyphFills(
+  layers: FillLayer[],
+  groups: LayerGroup[],
+  pairs: BooleanPair[],
+  geom: GeometryService,
+  opts: RenderOptions = {},
+): FillGroup[] {
+  return buildFillGroups(
+    flattenRenderGroups(layers, groups, pairs, geom, opts),
+    pairs,
+    geom,
+    opts,
+  );
+}
+
 export function glyphFillGroups(
   glyph: Glyph,
   geom: GeometryService,
@@ -375,10 +403,10 @@ export function glyphFillGroups(
       ...(l.baked ? { baked: true } : {}),
       ...(l.groupId ? { groupId: l.groupId } : {}),
     }));
-  const pairs = glyph.booleanPairs ?? [];
-  const groups = buildFillGroups(
-    flattenRenderGroups(layers, glyph.layerGroups ?? [], pairs, geom, opts),
-    pairs,
+  const groups = buildGlyphFills(
+    layers,
+    glyph.layerGroups ?? [],
+    glyph.booleanPairs ?? [],
     geom,
     opts,
   );
