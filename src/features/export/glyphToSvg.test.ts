@@ -99,6 +99,19 @@ describe("glyphToSvg", () => {
     expect(svg).toContain('viewBox="100 -300 300 1"');
   });
 
+  it("a corrupt coordinate can't poison the viewBox", () => {
+    // A BAKED layer renders verbatim (Invariant 4) — no Paper pass launders a bad
+    // coordinate out — so the frame math must survive it on its own. A NaN in the
+    // viewBox makes the WHOLE file render as nothing, not just the bad path.
+    const bad = poly("bad", [[NaN, 0], [100, 0], [100, 100]]);
+    const g = glyph([{ ...layer("LA", [bad, BIG]), baked: true }]);
+    for (const svg of [glyphToSvg(g, DEFAULT_METRICS), glyphToSvg(g, DEFAULT_METRICS, { tightCrop: true })]) {
+      const vb = svg.match(/viewBox="([^"]+)"/)![1]!;
+      expect(vb).not.toContain("NaN");
+      expect(vb.split(" ").every((v) => Number.isFinite(Number(v)))).toBe(true);
+    }
+  });
+
   it("tightCrop leaves the artwork itself untouched (frame-only switch)", () => {
     const g = glyph([layer("LA", [BIG])]);
     const paths = (svg: string) => svg.match(/<path [^>]*>/g);

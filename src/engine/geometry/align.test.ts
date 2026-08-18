@@ -103,6 +103,31 @@ describe("contourTightBounds", () => {
     expect(contourTightBounds({ id: "shut", closed: true, points: pts })!.minX).toBeLessThan(0);
   });
 
+  it("drops a non-finite segment instead of propagating NaN", () => {
+    // One corrupt coordinate must not poison the box — the export frames its whole
+    // viewBox off this, and NaN spreads through every later min/max.
+    const c: Contour = {
+      id: "c",
+      closed: true,
+      points: [
+        { id: "a", type: "corner", x: NaN, y: 0 },
+        { id: "b", type: "corner", x: 100, y: 0 },
+        { id: "c", type: "corner", x: 100, y: 100 },
+      ],
+    };
+    const b = contourTightBounds(c)!;
+    for (const v of [b.minX, b.minY, b.maxX, b.maxY]) expect(Number.isFinite(v)).toBe(true);
+    expect(b).toEqual({ minX: 100, minY: 0, maxX: 100, maxY: 100 });
+    // All-corrupt = nothing to measure at all.
+    expect(
+      contourTightBounds({
+        id: "all",
+        closed: false,
+        points: [{ id: "p", type: "corner", x: NaN, y: NaN }],
+      }),
+    ).toBeNull();
+  });
+
   it("returns null for an empty contour and a point for a single anchor", () => {
     expect(contourTightBounds({ id: "e", closed: false, points: [] })).toBeNull();
     expect(contourTightBounds({

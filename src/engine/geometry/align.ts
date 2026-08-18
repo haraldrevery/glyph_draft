@@ -58,20 +58,31 @@ export function contourTightBounds(contour: Contour): BBox | null {
   const pts = contour.points;
   if (pts.length === 0) return null;
   const first = pts[0]!;
-  const box: BBox = { minX: first.x, minY: first.y, maxX: first.x, maxY: first.y };
+  let box = finite({ minX: first.x, minY: first.y, maxX: first.x, maxY: first.y });
   const last = contour.closed ? pts.length : pts.length - 1;
   for (let i = 0; i < last; i++) {
     const a = pts[i]!;
     const b = pts[(i + 1) % pts.length]!;
     // A missing handle collapses onto its own anchor — the cubic degenerates to the
     // straight segment, which is exactly the geometry `contourToPath` emits.
-    const seg = cubicBounds(a, a.handleOut ?? a, b.handleIn ?? b, b);
-    if (seg.minX < box.minX) box.minX = seg.minX;
-    if (seg.minY < box.minY) box.minY = seg.minY;
-    if (seg.maxX > box.maxX) box.maxX = seg.maxX;
-    if (seg.maxY > box.maxY) box.maxY = seg.maxY;
+    const seg = finite(cubicBounds(a, a.handleOut ?? a, b.handleIn ?? b, b));
+    // A non-finite segment is SKIPPED, never merged: NaN spreads through min/max, and
+    // one corrupt coordinate would otherwise poison every box built from this one (the
+    // export frames its whole viewBox off it). `contourBounds` drops NaN the same way,
+    // by relying on comparisons against NaN being false.
+    if (seg) box = box ? union([box, seg]) : seg;
   }
   return box;
+}
+
+/** The box itself, or null if any edge is NaN/Infinity. */
+function finite(box: BBox): BBox | null {
+  return Number.isFinite(box.minX) &&
+    Number.isFinite(box.minY) &&
+    Number.isFinite(box.maxX) &&
+    Number.isFinite(box.maxY)
+    ? box
+    : null;
 }
 
 function union(boxes: BBox[]): BBox {
