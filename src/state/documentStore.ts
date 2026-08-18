@@ -1,11 +1,12 @@
 import { useMemo } from "react";
 import { create } from "zustand";
-import type { BooleanPair, Glyph, Layer, PairOp } from "../types/document";
+import type { BooleanPair, Glyph, Layer, LayerGroup, PairOp } from "../types/document";
 import type { AnchorPoint, Contour, CornerStyle, GradientFill, Paint, PointRef, StrokeStyle } from "../types/geometry";
 import { DEFAULT_STROKE } from "../types/geometry";
 import { createId } from "../utils/id";
 import { extractContours, joinContours, splitContourAt, splitContourAtPoints } from "../engine/geometry/topology";
 import { convertPoint } from "../engine/geometry/nodeHandles";
+import { ancestors, findGroup, groupRange } from "../features/layers/layerTree";
 import { DEFAULT_METRICS } from "../constants/metrics";
 import {
   cloneLayer,
@@ -177,6 +178,127 @@ interface DocumentState {
    *  the merged geometry (keeps Paper.js out of the store). One undo step. */
   commitMerge: (removeIds: string[], merged: Layer) => void;
   moveLayer: (layerId: string, direction: "up" | "down") => void;
+
+  // ---- Layer groups (folders) ------------------------------------------------
+  // `glyph.layers` stays FLAT; groups live in `glyph.layerGroups` and nest via
+  // `parentId`. See `features/layers/layerTree.ts` for the tree view, and the
+  // CONTIGUITY invariant on `LayerGroup`: a group's members occupy an unbroken run
+  // of `glyph.layers`, which these actions maintain.
+
+  /** Put the given layers into a NEW group, reordering them into one contiguous run
+   *  at the topmost member's position. Nests under the common parent group when the
+   *  members already share one. Returns the new group id (null if it did nothing).
+   *  One undo step. */
+  groupLayers: (layerIds: string[], name?: string) => string | null;
+  /** Dissolve a group: its layers and child groups are re-parented to the group's own
+   *  parent (so an inner group survives), and the group is removed. Geometry and stack
+   *  order are untouched. One undo step. */
+  ungroupGroup: (groupId: string) => void;
+  renameGroup: (groupId: string, name: string) => void;
+  setGroupCollapsed: (groupId: string, collapsed: boolean) => void;
+  setGroupVisible: (groupId: string, visible: boolean) => void;
+  setGroupLocked: (groupId: string, locked: boolean) => void;
+  /** Render the group's contents as ONE layer (Stage 4). Stored now so the flag
+   *  round-trips through save/load before anything consumes it. */
+  setGroupRenderAsOne: (groupId: string, renderAsOne: boolean) => void;
+  /** Move a whole group past its adjacent SIBLING (same parent). A move that would
+   *  cross a parent boundary is a no-op — re-parenting is a drag-and-drop concern. */
+  moveGroup: (groupId: string, direction: "up" | "down") => void;
+}
+
+/**
+ * Write a group list back onto a glyph, dropping the key entirely when it is empty so
+ * an ungrouped document stays byte-identical to a pre-groups save.
+ */
+function withGroups(glyph: Glyph, groups: LayerGroup[]): Glyph {
+  if (groups.length === 0) {
+    const next = { ...glyph };
+    delete next.layerGroups;
+    return next;
+  }
+  return { ...glyph, layerGroups: groups };
+}
+
+/**
+ * Drop groups that no longer hold any layer (directly or through a descendant), plus
+ * any boolean pair that referenced one. Runs after a delete/merge so a dissolved
+ * folder cannot linger as a phantom panel row or a stale Pathfinder operand.
+ *
+ * Iterates to a fixed point: emptying an inner group can empty its parent too.
+ */
+function pruneEmptyGroups(glyph: Glyph): Glyph {
+  const groups = glyph.layerGroups ?? [];
+  if (groups.length === 0) return glyph;
+
+  let keep = groups;
+  for (;;) {
+    const keepIds = new Set(keep.map((g) => g.id));
+    const holdsLayer = new Set(
+      glyph.layers.map((l) => l.groupId).filter((id): id is string => !!id && keepIds.has(id)),
+    );
+    // A group survives if it holds a layer directly, or if a surviving child does.
+    const survives = new Set<string>();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const g of keep) {
+        if (survives.has(g.id)) continue;
+        const childSurvives = keep.some((c) => c.parentId === g.id && survives.has(c.id));
+        if (holdsLayer.has(g.id) || childSurvives) {
+          survives.add(g.id);
+          changed = true;
+        }
+      }
+    }
+    const next = keep.filter((g) => survives.has(g.id));
+    if (next.length === keep.length) break;
+    keep = next;
+  }
+  if (keep.length === groups.length) return glyph;
+
+  const gone = new Set(groups.filter((g) => !keep.some((k) => k.id === g.id)).map((g) => g.id));
+  const out = withGroups(glyph, keep);
+  if (out.booleanPairs) {
+    const pairs = out.booleanPairs.filter((p) => !p.layerIds.some((id) => gone.has(id)));
+    if (pairs.length !== out.booleanPairs.length) {
+      return pairs.length ? { ...out, booleanPairs: pairs } : (() => {
+        const o = { ...out };
+        delete o.booleanPairs;
+        return o;
+      })();
+    }
+  }
+  return out;
+}
+
+/** "Group 1", "Group 2", … skipping names already taken. */
+function nextGroupName(glyph: Glyph): string {
+  const taken = new Set((glyph.layerGroups ?? []).map((g) => g.name));
+  for (let n = (glyph.layerGroups ?? []).length + 1; ; n += 1) {
+    const name = `Group ${n}`;
+    if (!taken.has(name)) return name;
+  }
+}
+
+/**
+ * Walk up from `groupId` until we find the group whose parent is `parentId` — i.e. the
+ * sibling-level block containing it. Returns null when `groupId` is not inside
+ * `parentId` at all (so a move must not cross into it).
+ */
+function siblingAncestor(glyph: Glyph, groupId: string, parentId?: string): string | null {
+  const chain = [groupId, ...ancestors(glyph, groupId).map((g) => g.id)];
+  for (const id of chain) {
+    if ((findGroup(glyph, id)?.parentId ?? undefined) === (parentId ?? undefined)) return id;
+  }
+  return null;
+}
+
+/** The group a newly inserted layer should join: the active layer's own group, so a
+ *  new/duplicated/imported layer placed just above it cannot split that group's run
+ *  (the CONTIGUITY invariant). Undefined = top level. */
+function inheritGroupId(glyph: Glyph, activeLayerId: string | null): string | undefined {
+  if (!activeLayerId) return undefined;
+  return glyph.layers.find((l) => l.id === activeLayerId)?.groupId;
 }
 
 function seed(): Pick<
@@ -249,6 +371,17 @@ export const useDocumentStore = create<DocumentState>()(
         // no-match call still produces a new glyph object (and so an undo step).
         // Preserved deliberately; changing it is a behaviour change, not a refactor.
         set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
+      };
+
+      /** Group-list edit on the active glyph. One undo step; an empty result drops
+       *  the `layerGroups` key so an ungrouped document stays as it was. */
+      const mutateGroups = (fn: (groups: LayerGroup[]) => LayerGroup[]): void => {
+        const s = get();
+        if (!s.activeGlyphId) return;
+        const glyph = s.glyphs[s.activeGlyphId];
+        if (!glyph) return;
+        const next = fn(glyph.layerGroups ?? []);
+        set({ glyphs: { ...s.glyphs, [glyph.id]: withGroups(glyph, next) } });
       };
 
       /** Layer-array edit on the active glyph (lock does not apply). */
@@ -873,11 +1006,15 @@ export const useDocumentStore = create<DocumentState>()(
           if (!s.activeGlyphId) return;
           const glyph = s.glyphs[s.activeGlyphId];
           if (!glyph || contours.length === 0) return;
+          // Inherit the active layer's group so the splice above it cannot
+          // split that group's contiguous run.
+          const inheritedGid = inheritGroupId(glyph, s.activeLayerId);
           // Baked = render the imported geometry verbatim (holes/colours preserved).
           const layer: Layer = {
             ...makeEmptyLayer(name ?? nextLayerName(glyph)),
             contours,
             baked: true,
+            ...(inheritedGid ? { groupId: inheritedGid } : {}),
           };
           const at = glyph.layers.findIndex((l) => l.id === s.activeLayerId);
           const insert = at >= 0 ? at + 1 : glyph.layers.length;
@@ -901,10 +1038,14 @@ export const useDocumentStore = create<DocumentState>()(
             return kept.length === layer.contours.length ? layer : { ...layer, contours: kept };
           });
           // Baked = render the expanded outline verbatim (holes/winding preserved).
+          // Inherit the active layer's group so the splice above it cannot
+          // split that group's contiguous run.
+          const inheritedGid = inheritGroupId(glyph, s.activeLayerId);
           const layer: Layer = {
             ...makeEmptyLayer(name ?? nextLayerName(glyph)),
             contours: expanded,
             baked: true,
+            ...(inheritedGid ? { groupId: inheritedGid } : {}),
           };
           const at = stripped.findIndex((l) => l.id === s.activeLayerId);
           const insert = at >= 0 ? at + 1 : stripped.length;
@@ -968,7 +1109,11 @@ export const useDocumentStore = create<DocumentState>()(
           if (!s.activeGlyphId) return;
           const glyph = s.glyphs[s.activeGlyphId];
           if (!glyph) return;
-          const layer = makeEmptyLayer(nextLayerName(glyph));
+          const inherited = inheritGroupId(glyph, s.activeLayerId);
+          const base = makeEmptyLayer(nextLayerName(glyph));
+          // Join the active layer's group: the insert lands directly above it, so a
+          // group-less new layer would split that group's contiguous run.
+          const layer = inherited ? { ...base, groupId: inherited } : base;
           const at = glyph.layers.findIndex((l) => l.id === s.activeLayerId);
           const insert = at >= 0 ? at + 1 : glyph.layers.length;
           const layers = [
@@ -1013,13 +1158,16 @@ export const useDocumentStore = create<DocumentState>()(
           const at = glyph.layers.findIndex((l) => l.id === layerId);
           if (at < 0) return;
           const layers = glyph.layers.filter((l) => l.id !== layerId);
-          const nextGlyph: Glyph = { ...glyph, layers };
+          let nextGlyph: Glyph = { ...glyph, layers };
           // Drop any boolean pair that referenced the removed layer.
           if (glyph.booleanPairs) {
             nextGlyph.booleanPairs = glyph.booleanPairs.filter(
               (p) => !p.layerIds.includes(layerId),
             );
           }
+          // Drop groups the delete left empty (and any pair that referenced them), so
+          // a dissolved folder can't linger as a phantom row or a stale operand.
+          nextGlyph = pruneEmptyGroups(nextGlyph);
           let activeLayerId = s.activeLayerId;
           if (s.activeLayerId === layerId) {
             activeLayerId = layers[Math.min(at, layers.length - 1)]?.id ?? null;
@@ -1110,17 +1258,161 @@ export const useDocumentStore = create<DocumentState>()(
           const kept = glyph.layers.filter((l) => !remove.has(l.id));
           const layers = [...kept.slice(0, below), merged, ...kept.slice(below)];
 
-          const nextGlyph: Glyph = { ...glyph, layers };
+          let nextGlyph: Glyph = { ...glyph, layers };
           if (glyph.booleanPairs) {
             nextGlyph.booleanPairs = glyph.booleanPairs.filter(
               (p) => !p.layerIds.some((id) => remove.has(id)),
             );
           }
+          nextGlyph = pruneEmptyGroups(nextGlyph);
           set({
             glyphs: { ...s.glyphs, [glyph.id]: nextGlyph },
             activeLayerId: merged.id,
             selectedLayerIds: [merged.id],
           });
+        },
+
+        groupLayers: (layerIds, name) => {
+          const s = get();
+          if (!s.activeGlyphId) return null;
+          const glyph = s.glyphs[s.activeGlyphId];
+          if (!glyph) return null;
+          const wanted = new Set(layerIds);
+          const members = glyph.layers.filter((l) => wanted.has(l.id));
+          if (members.length === 0) return null;
+
+          // Nest under the parent the members already share (grouping a subset of a
+          // group's layers makes a subgroup); mixed parents ⇒ a top-level group.
+          const parents = new Set(members.map((l) => l.groupId));
+          const parentId = parents.size === 1 ? [...parents][0] : undefined;
+
+          const groupId = createId("grp");
+          const group: LayerGroup = {
+            id: groupId,
+            name: name?.trim() || nextGroupName(glyph),
+            visible: true,
+            locked: false,
+            ...(parentId ? { parentId } : {}),
+          };
+
+          // CONTIGUITY: pull the members out and reinsert them as one run at the
+          // topmost member's slot, so the group occupies an unbroken range.
+          const memberIds = new Set(members.map((l) => l.id));
+          const rest = glyph.layers.filter((l) => !memberIds.has(l.id));
+          let top = -1;
+          glyph.layers.forEach((l, i) => {
+            if (memberIds.has(l.id)) top = i;
+          });
+          const below = glyph.layers.slice(0, top).filter((l) => !memberIds.has(l.id)).length;
+          const tagged = members.map((l) => ({ ...l, groupId }));
+          const layers = [...rest.slice(0, below), ...tagged, ...rest.slice(below)];
+
+          set({
+            glyphs: {
+              ...s.glyphs,
+              [glyph.id]: { ...glyph, layers, layerGroups: [...(glyph.layerGroups ?? []), group] },
+            },
+          });
+          return groupId;
+        },
+
+        ungroupGroup: (groupId) => {
+          const s = get();
+          if (!s.activeGlyphId) return;
+          const glyph = s.glyphs[s.activeGlyphId];
+          if (!glyph) return;
+          const groups = glyph.layerGroups ?? [];
+          const target = groups.find((g) => g.id === groupId);
+          if (!target) return;
+
+          // Re-parent one level up: direct layers and direct child groups both adopt
+          // the dissolved group's own parent, so an inner group survives intact.
+          const up = target.parentId;
+          const layers = glyph.layers.map((l) => {
+            if (l.groupId !== groupId) return l;
+            const next = { ...l };
+            if (up) next.groupId = up;
+            else delete next.groupId;
+            return next;
+          });
+          const layerGroups = groups
+            .filter((g) => g.id !== groupId)
+            .map((g) => {
+              if (g.parentId !== groupId) return g;
+              const next = { ...g };
+              if (up) next.parentId = up;
+              else delete next.parentId;
+              return next;
+            });
+          set({
+            glyphs: {
+              ...s.glyphs,
+              [glyph.id]: withGroups({ ...glyph, layers }, layerGroups),
+            },
+          });
+        },
+
+        renameGroup: (groupId, name) =>
+          mutateGroups((groups) =>
+            groups.map((g) => (g.id === groupId ? { ...g, name: name.trim() || g.name } : g)),
+          ),
+
+        setGroupCollapsed: (groupId, collapsed) =>
+          mutateGroups((groups) =>
+            groups.map((g) => (g.id === groupId ? { ...g, collapsed } : g)),
+          ),
+
+        setGroupVisible: (groupId, visible) =>
+          mutateGroups((groups) =>
+            groups.map((g) => (g.id === groupId ? { ...g, visible } : g)),
+          ),
+
+        setGroupLocked: (groupId, locked) =>
+          mutateGroups((groups) =>
+            groups.map((g) => (g.id === groupId ? { ...g, locked } : g)),
+          ),
+
+        setGroupRenderAsOne: (groupId, renderAsOne) =>
+          mutateGroups((groups) =>
+            groups.map((g) => (g.id === groupId ? { ...g, renderAsOne } : g)),
+          ),
+
+        moveGroup: (groupId, direction) => {
+          const s = get();
+          if (!s.activeGlyphId) return;
+          const glyph = s.glyphs[s.activeGlyphId];
+          if (!glyph) return;
+          const range = groupRange(glyph, groupId);
+          const self = findGroup(glyph, groupId);
+          if (!range || !self) return;
+          const [lo, hi] = range;
+
+          // The adjacent item in the move direction must be a SIBLING (same parent);
+          // anything else would mean re-parenting, which needs drag-and-drop.
+          const probe = direction === "up" ? hi + 1 : lo - 1;
+          const neighbour = glyph.layers[probe];
+          if (!neighbour) return;
+          const nGroup = neighbour.groupId ? findGroup(glyph, neighbour.groupId) : undefined;
+          // Resolve the neighbour to the sibling BLOCK it belongs to.
+          let block: [number, number];
+          if (!nGroup) {
+            if ((self.parentId ?? undefined) !== undefined) return; // leaving the parent
+            block = [probe, probe];
+          } else {
+            const sibId = siblingAncestor(glyph, nGroup.id, self.parentId);
+            if (!sibId) return; // the neighbour is outside our parent → no-op
+            const r = groupRange(glyph, sibId);
+            if (!r) return;
+            block = r;
+          }
+
+          const run = glyph.layers.slice(lo, hi + 1);
+          const other = glyph.layers.slice(block[0], block[1] + 1);
+          const head = glyph.layers.slice(0, Math.min(lo, block[0]));
+          const tail = glyph.layers.slice(Math.max(hi, block[1]) + 1);
+          const layers =
+            direction === "up" ? [...head, ...other, ...run, ...tail] : [...head, ...run, ...other, ...tail];
+          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
         },
 
         moveLayer: (layerId, direction) => {

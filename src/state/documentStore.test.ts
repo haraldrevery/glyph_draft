@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { useDocumentStore } from "./documentStore";
 import { useHistoryStore } from "./history";
 import type { Glyph, Layer } from "../types/document";
+import { findGroup, groupMembers, isContiguous } from "../features/layers/layerTree";
 import type { Contour } from "../types/geometry";
 
 /**
@@ -630,5 +631,222 @@ describe("addGlyphs (set templates)", () => {
     state().addGlyphs([0x42, 0x42, 0x42]);
     const bs = Object.values(state().glyphs).filter((g) => g.codepoint === 0x42);
     expect(bs).toHaveLength(1);
+  });
+});
+
+describe("layer groups", () => {
+  /** Install a glyph with N plain layers, bottom-to-top by id order. */
+  function seedLayers(ids: string[], activeLayerId = ids[ids.length - 1]!): void {
+    const glyph: Glyph = {
+      id: "G",
+      codepoint: 0x41,
+      name: "A",
+      advanceWidth: 600,
+      layers: ids.map((id) => layer(id, [])),
+    };
+    useDocumentStore.setState({
+      glyphs: { G: glyph },
+      activeGlyphId: "G",
+      activeLayerId,
+      selectedLayerIds: [activeLayerId],
+    });
+  }
+
+  const g = () => state().glyphs["G"]!;
+  const order = () => g().layers.map((l) => l.id);
+  const groupOf = (id: string) => g().layers.find((l) => l.id === id)?.groupId;
+
+  it("groups layers and tags them", () => {
+    seedLayers(["a", "b", "c"]);
+    const gid = state().groupLayers(["a", "b"])!;
+    expect(gid).toBeTruthy();
+    expect(groupOf("a")).toBe(gid);
+    expect(groupOf("b")).toBe(gid);
+    expect(groupOf("c")).toBeUndefined();
+    expect(g().layerGroups).toHaveLength(1);
+    expect(isContiguous(g(), gid)).toBe(true);
+  });
+
+  it("REORDERS scattered members into one contiguous run", () => {
+    // a and c are separated by b — the group must pull them together, or paint
+    // order inside the group is undefined.
+    seedLayers(["a", "b", "c", "d"]);
+    const gid = state().groupLayers(["a", "c"])!;
+    expect(isContiguous(g(), gid)).toBe(true);
+    // The run lands at the TOPMOST member's slot; b keeps its relative place below.
+    expect(order()).toEqual(["b", "a", "c", "d"]);
+  });
+
+  it("nests when the members share a parent group", () => {
+    seedLayers(["a", "b", "c"]);
+    const outer = state().groupLayers(["a", "b", "c"])!;
+    const inner = state().groupLayers(["a", "b"])!;
+    expect(findGroup(g(), inner)?.parentId).toBe(outer);
+    expect(groupMembers(g(), outer).map((l) => l.id).sort()).toEqual(["a", "b", "c"]);
+    expect(groupMembers(g(), inner).map((l) => l.id).sort()).toEqual(["a", "b"]);
+  });
+
+  it("is one undo step and leaves geometry untouched", () => {
+    seedLayers(["a", "b"]);
+    const before = g().layers.map((l) => l.contours);
+    state().groupLayers(["a", "b"]);
+    expect(g().layers.map((l) => l.contours)).toEqual(before);
+  });
+
+  it("ignores unknown ids and no-ops on an empty selection", () => {
+    seedLayers(["a"]);
+    expect(state().groupLayers([])).toBeNull();
+    expect(state().groupLayers(["nope"])).toBeNull();
+    expect(g().layerGroups).toBeUndefined();
+  });
+
+  it("ungroup re-parents one level up and keeps an inner group", () => {
+    seedLayers(["a", "b"]);
+    const outer = state().groupLayers(["a", "b"])!;
+    const inner = state().groupLayers(["a"])!;
+    state().ungroupGroup(outer);
+    // The inner group survives, promoted to top level; its layer stays in it.
+    expect(findGroup(g(), inner)?.parentId).toBeUndefined();
+    expect(groupOf("a")).toBe(inner);
+    expect(groupOf("b")).toBeUndefined();
+  });
+
+  it("ungroup drops the group and clears its layers' tag", () => {
+    seedLayers(["a", "b"]);
+    const gid = state().groupLayers(["a", "b"])!;
+    state().ungroupGroup(gid);
+    expect(g().layerGroups).toBeUndefined();
+    expect(groupOf("a")).toBeUndefined();
+    expect(order()).toEqual(["a", "b"]); // stack order preserved
+  });
+
+  it("group flags round-trip", () => {
+    seedLayers(["a"]);
+    const gid = state().groupLayers(["a"], "Serifs")!;
+    expect(findGroup(g(), gid)?.name).toBe("Serifs");
+    state().renameGroup(gid, "Feet");
+    state().setGroupCollapsed(gid, true);
+    state().setGroupVisible(gid, false);
+    state().setGroupLocked(gid, true);
+    state().setGroupRenderAsOne(gid, true);
+    const grp = findGroup(g(), gid)!;
+    expect(grp).toMatchObject({
+      name: "Feet",
+      collapsed: true,
+      visible: false,
+      locked: true,
+      renderAsOne: true,
+    });
+  });
+
+  it("an empty rename keeps the old name", () => {
+    seedLayers(["a"]);
+    const gid = state().groupLayers(["a"], "Keep")!;
+    state().renameGroup(gid, "   ");
+    expect(findGroup(g(), gid)?.name).toBe("Keep");
+  });
+
+  describe("contiguity is preserved by inserts", () => {
+    it("addLayer joins the active layer's group", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      state().setActiveLayer("a"); // a mid-group layer
+      state().addLayer();
+      expect(isContiguous(g(), gid)).toBe(true);
+      const added = state().activeLayerId!;
+      expect(groupOf(added)).toBe(gid);
+    });
+
+    it("duplicateLayer keeps the copy in the group", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      state().duplicateLayer("a");
+      expect(isContiguous(g(), gid)).toBe(true);
+      expect(groupOf(state().activeLayerId!)).toBe(gid);
+    });
+
+    it("addImportedLayer keeps the run unbroken", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      state().setActiveLayer("a");
+      state().addImportedLayer([OUTER], "Imported");
+      expect(isContiguous(g(), gid)).toBe(true);
+    });
+
+    it("a new layer above a NON-grouped active layer stays ungrouped", () => {
+      seedLayers(["a", "b"]);
+      const gid = state().groupLayers(["a"])!;
+      state().setActiveLayer("b");
+      state().addLayer();
+      expect(groupOf(state().activeLayerId!)).toBeUndefined();
+      expect(isContiguous(g(), gid)).toBe(true);
+    });
+  });
+
+  describe("pruning", () => {
+    it("deleting a group's last layer drops the group", () => {
+      seedLayers(["a", "b"]);
+      const gid = state().groupLayers(["a"])!;
+      expect(findGroup(g(), gid)).toBeTruthy();
+      state().deleteLayer("a");
+      expect(findGroup(g(), gid)).toBeUndefined();
+      expect(g().layerGroups).toBeUndefined();
+    });
+
+    it("emptying an inner group prunes its now-empty parent too", () => {
+      seedLayers(["a", "b"]);
+      const outer = state().groupLayers(["a"])!;
+      const inner = state().groupLayers(["a"])!;
+      expect(findGroup(g(), inner)?.parentId).toBe(outer);
+      state().deleteLayer("a");
+      expect(g().layerGroups).toBeUndefined();
+    });
+
+    it("keeps a group that still holds a layer", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      state().deleteLayer("a");
+      expect(findGroup(g(), gid)).toBeTruthy();
+      expect(groupOf("b")).toBe(gid);
+    });
+  });
+
+  describe("moveGroup", () => {
+    it("moves the whole run past a sibling layer", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      expect(order()).toEqual(["a", "b", "c"]);
+      state().moveGroup(gid, "up"); // past c
+      expect(order()).toEqual(["c", "a", "b"]);
+      expect(isContiguous(g(), gid)).toBe(true);
+    });
+
+    it("moves past a sibling GROUP as a block", () => {
+      seedLayers(["a", "b", "c", "d"]);
+      const g1 = state().groupLayers(["a", "b"])!;
+      const g2 = state().groupLayers(["c", "d"])!;
+      state().moveGroup(g1, "up");
+      expect(order()).toEqual(["c", "d", "a", "b"]);
+      expect(isContiguous(g(), g1)).toBe(true);
+      expect(isContiguous(g(), g2)).toBe(true);
+    });
+
+    it("is a no-op at the edge", () => {
+      seedLayers(["a", "b"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      const before = order();
+      state().moveGroup(gid, "up");
+      expect(order()).toEqual(before);
+    });
+
+    it("refuses to cross out of its parent", () => {
+      // inner sits inside outer; moving it up must not escape outer.
+      seedLayers(["a", "b", "c"]);
+      state().groupLayers(["a", "b"]);
+      const inner = state().groupLayers(["a"])!;
+      const before = order();
+      state().moveGroup(inner, "up");
+      expect(order()).toEqual(before);
+    });
   });
 });

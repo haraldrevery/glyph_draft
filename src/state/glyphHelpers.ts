@@ -177,10 +177,16 @@ export function cloneLayer(layer: Layer, name = `${layer.name} copy`): Layer {
     locked: false, // a fresh duplicate is editable
     contours: layer.contours.map(cloneContourWithNewIds),
   };
+  // NOTE: this rebuilds `Layer` field-by-field, so a new optional field must be added
+  // HERE too — omitting one compiles clean and is silently lost on duplicate/paste.
+  //
   // `baked` must survive the copy: renderContours returns a baked layer's contours
   // VERBATIM (Invariant 4's deliberate exception). Dropping the flag force-CWs them,
   // which fills in the holes of a duplicated import / merge / expanded stroke.
   if (layer.baked) clone.baked = true;
+  // `groupId` must survive too: the clone is inserted directly above its source, i.e.
+  // INSIDE the group's run, so dropping it would break the contiguity invariant.
+  if (layer.groupId) clone.groupId = layer.groupId;
   return clone;
 }
 

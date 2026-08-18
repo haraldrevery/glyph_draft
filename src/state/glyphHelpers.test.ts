@@ -92,6 +92,17 @@ describe("cloneLayer", () => {
     expect(cloneLayer(baked({ baked: true })).baked).toBe(true);
   });
 
+  // Regression guard for the field-by-field rebuild: a duplicated layer that silently
+  // left its group would break the CONTIGUITY invariant (its clone is inserted directly
+  // above it, inside the group's run) and quietly change what renders.
+  it("carries groupId", () => {
+    expect(cloneLayer(baked({ groupId: "grp_1" })).groupId).toBe("grp_1");
+  });
+
+  it("leaves groupId unset on an ungrouped layer", () => {
+    expect(cloneLayer(baked()).groupId).toBeUndefined();
+  });
+
   it("leaves baked unset on an ordinary layer", () => {
     expect(cloneLayer(baked()).baked).toBeUndefined();
   });
