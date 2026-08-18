@@ -1366,6 +1366,9 @@ export const useDocumentStore = create<DocumentState>()(
             name: name?.trim() || nextGroupName(glyph),
             visible: true,
             locked: false,
+            // New groups render as ONE layer — that is what "group" means here.
+            // Turn it off per group to get a plain organisational folder.
+            renderAsOne: true,
             ...(parentId ? { parentId } : {}),
           };
 
@@ -1617,8 +1620,18 @@ export function useBooleanPairs(): BooleanPair[] {
   });
 }
 
+/** The active glyph's layer groups (empty array when none). A stable empty array so
+ *  an ungrouped document never re-renders on identity churn. */
+export function useLayerGroups(): LayerGroup[] {
+  return useDocumentStore((s) => {
+    const glyph = s.activeGlyphId ? s.glyphs[s.activeGlyphId] : null;
+    return glyph?.layerGroups ?? EMPTY_GROUPS;
+  });
+}
+
 /** Stable empty reference so useBooleanPairs doesn't churn on every render. */
 const EMPTY_PAIRS: BooleanPair[] = [];
+const EMPTY_GROUPS: LayerGroup[] = [];
 
 /** Find the boolean pair a layer belongs to, if any. */
 export function pairForLayer(

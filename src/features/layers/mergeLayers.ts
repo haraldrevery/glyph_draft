@@ -1,6 +1,6 @@
 import { useDocumentStore } from "../../state/documentStore";
 import { useViewportStore } from "../../state/viewportStore";
-import { buildFillGroups, type FillLayer } from "../canvas/layerFills";
+import { bakeContours, type FillLayer } from "../canvas/layerFills";
 import { getGeometryService } from "../../engine/geometry/geometryEngine";
 import { createId } from "../../utils/id";
 import type { Layer } from "../../types/document";
@@ -40,13 +40,11 @@ export function mergeLayers(layerIds: string[]): void {
     (p) => targetIds.has(p.layerIds[0]) && targetIds.has(p.layerIds[1]),
   );
 
-  const groups = buildFillGroups(
-    fillLayers,
-    pairs,
-    getGeometryService(),
-    { mergeHalftones: useViewportStore.getState().mergeHalftones },
-  );
-  const contours = groups.flatMap((g) => g.contours);
+  // The SAME bake the render-as-one group pre-pass uses, so merging a group produces
+  // geometry identical to that group rendered as one.
+  const contours = bakeContours(fillLayers, pairs, getGeometryService(), {
+    mergeHalftones: useViewportStore.getState().mergeHalftones,
+  });
 
   const merged: Layer = {
     id: createId("ly"),

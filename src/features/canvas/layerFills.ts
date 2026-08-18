@@ -1,5 +1,5 @@
 import { DEFAULT_HALFTONE, type Contour, type GradientFill, type Paint } from "../../types/geometry";
-import type { BooleanPair, Glyph } from "../../types/document";
+import type { BooleanPair, Glyph, LayerGroup } from "../../types/document";
 import type { GeometryService } from "../../engine/geometry/GeometryService";
 import { ensureWinding } from "../../engine/geometry/path";
 import { withCorners } from "../../engine/geometry/corners";
@@ -35,6 +35,9 @@ export interface FillLayer {
   /** A baked/merged layer: render its contours as-is (winding preserved, no
    *  stroke expansion, no force-CW). See Layer.baked. */
   baked?: boolean;
+  /** The layer's group, if any — read by `flattenRenderGroups` to collapse a
+   *  `renderAsOne` group into a single synthetic layer. */
+  groupId?: string;
 }
 
 /**
@@ -366,8 +369,131 @@ export function glyphFillGroups(
   if (cached) return cached;
   const layers: FillLayer[] = resolvedLayers(glyph)
     .filter((l) => l.visible)
-    .map((l) => ({ id: l.id, contours: l.contours, ...(l.baked ? { baked: true } : {}) }));
-  const groups = buildFillGroups(layers, glyph.booleanPairs ?? [], geom, opts);
+    .map((l) => ({
+      id: l.id,
+      contours: l.contours,
+      ...(l.baked ? { baked: true } : {}),
+      ...(l.groupId ? { groupId: l.groupId } : {}),
+    }));
+  const pairs = glyph.booleanPairs ?? [];
+  const groups = buildFillGroups(
+    flattenRenderGroups(layers, glyph.layerGroups ?? [], pairs, geom, opts),
+    pairs,
+    geom,
+    opts,
+  );
   cache.set(glyph, groups);
   return groups;
+}
+
+/**
+ * Bake a set of layers down to ONE layer's worth of final contours — the exact
+ * pipeline the canvas draws, flattened.
+ *
+ * Shared by destructive "Merge layers" and by the render-as-one group pre-pass below,
+ * so a merged group is guaranteed to look identical to the same group rendered as one.
+ * Any boolean pair fully inside `layers` is applied; a pair with one foot outside is
+ * skipped by `buildFillGroups` (which only resolves pairs whose both members are present).
+ */
+export function bakeContours(
+  layers: FillLayer[],
+  pairs: BooleanPair[],
+  geom: GeometryService,
+  opts: RenderOptions = {},
+): Contour[] {
+  return buildFillGroups(layers, pairs, geom, opts).flatMap((g) => g.contours);
+}
+
+/**
+ * Cache one group's bake against the IDENTITY of its members' contour arrays, so a drag
+ * elsewhere in the glyph doesn't re-bake every group on every frame. Contours are
+ * immutable (Invariant 2), so identical references mean identical geometry.
+ *
+ * Keyed by group id AND `renderKey(opts)` — a render switch changes the baked geometry,
+ * so keying on the group alone would hand back the other setting's bake (the same
+ * mistake the twin mergeHalftones WeakMaps were built to avoid). Bounded by the number
+ * of groups × distinct option sets; entries are replaced, not accumulated.
+ */
+const bakeCache = new Map<string, { keys: readonly Contour[][]; result: Contour[] }>();
+
+function cachedBake(
+  groupId: string,
+  members: FillLayer[],
+  pairs: BooleanPair[],
+  geom: GeometryService,
+  opts: RenderOptions,
+): Contour[] {
+  const cacheKey = `${groupId}|${renderKey(opts)}`;
+  const keys = members.map((m) => m.contours);
+  const hit = bakeCache.get(cacheKey);
+  if (hit && hit.keys.length === keys.length && hit.keys.every((k, i) => k === keys[i])) {
+    return hit.result;
+  }
+  const result = bakeContours(members, pairs, geom, opts);
+  bakeCache.set(cacheKey, { keys, result });
+  return result;
+}
+
+/**
+ * Collapse every `renderAsOne` group into ONE synthetic layer, so the group's contents
+ * read as a single layer: overlaps inside it fuse into one region, and the group can act
+ * as a single Pathfinder operand (its synthetic id is a valid `booleanPairs` member).
+ *
+ * A PRE-PASS over the `FillLayer[]` projection — `buildFillGroups` and the whole
+ * boolean/blend/export path below it are untouched. The synthetic layer is `baked: true`
+ * because its contours are already fully rendered (strokes expanded, unstroked closed
+ * paths already forced CW, a baked member's CCW counters intact), so `renderContours`
+ * must emit them verbatim rather than force-CW them a second time.
+ *
+ * Relies on the CONTIGUITY invariant: a group's members are an unbroken run, so one
+ * linear pass collapses them in place and paint order is preserved.
+ *
+ * IDENTITY: with no render-as-one group this returns the SAME array, so an ungrouped
+ * (or organisation-only) document is completely unaffected.
+ */
+export function flattenRenderGroups(
+  layers: FillLayer[],
+  groups: LayerGroup[],
+  pairs: BooleanPair[],
+  geom: GeometryService,
+  opts: RenderOptions = {},
+): FillLayer[] {
+  if (groups.length === 0 || !groups.some((g) => g.renderAsOne)) return layers;
+  const byId = new Map(groups.map((g) => [g.id, g] as const));
+
+  // The TOPMOST render-as-one ancestor wins, so a plain folder nested inside a
+  // render-as-one one still bakes into the single outer layer. Cycle-safe.
+  const unitOf = (groupId?: string): string | null => {
+    let unit: string | null = null;
+    const seen = new Set<string>();
+    let cur = groupId;
+    while (cur && !seen.has(cur)) {
+      seen.add(cur);
+      const g = byId.get(cur);
+      if (!g) break;
+      if (g.renderAsOne) unit = g.id;
+      cur = g.parentId;
+    }
+    return unit;
+  };
+
+  const out: FillLayer[] = [];
+  let i = 0;
+  while (i < layers.length) {
+    const unit = unitOf(layers[i]!.groupId);
+    if (!unit) {
+      out.push(layers[i]!);
+      i += 1;
+      continue;
+    }
+    // Consume the whole contiguous run belonging to this unit.
+    const start = i;
+    while (i < layers.length && unitOf(layers[i]!.groupId) === unit) i += 1;
+    const members = layers.slice(start, i);
+    const ids = new Set(members.map((m) => m.id));
+    const inner = pairs.filter((p) => ids.has(p.layerIds[0]) && ids.has(p.layerIds[1]));
+    const contours = cachedBake(unit, members, inner, geom, opts);
+    if (contours.length > 0) out.push({ id: unit, contours, baked: true });
+  }
+  return out;
 }

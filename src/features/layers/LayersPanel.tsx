@@ -128,6 +128,10 @@ export function LayersPanel() {
       label: grp.locked ? "Unlock group" : "Lock group",
       onSelect: () => doc().setGroupLocked(grp.id, !grp.locked),
     },
+    {
+      label: grp.renderAsOne ? "Render separately" : "Render as one layer",
+      onSelect: () => doc().setGroupRenderAsOne(grp.id, !grp.renderAsOne),
+    },
     { label: "Ungroup", onSelect: () => doc().ungroupGroup(grp.id) },
     {
       label: `Merge ${groupMembers(glyph, grp.id).length} layers`,
