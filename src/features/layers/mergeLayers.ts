@@ -4,6 +4,7 @@ import { buildFillGroups, type FillLayer } from "../canvas/layerFills";
 import { getGeometryService } from "../../engine/geometry/geometryEngine";
 import { createId } from "../../utils/id";
 import type { Layer } from "../../types/document";
+import { resolvedLayers } from "./layerTree";
 
 /**
  * Destructive "Merge layers": bake the given layers' RENDERED geometry into one
@@ -25,7 +26,7 @@ export function mergeLayers(layerIds: string[]): void {
   if (!glyph) return;
 
   const wanted = new Set(layerIds);
-  const targets = glyph.layers.filter((l) => wanted.has(l.id) && !l.locked);
+  const targets = resolvedLayers(glyph).filter((l) => wanted.has(l.id) && !l.locked);
   if (targets.length < 2) return;
 
   const targetIds = new Set(targets.map((l) => l.id));

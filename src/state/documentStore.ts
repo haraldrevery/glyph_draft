@@ -6,7 +6,14 @@ import { DEFAULT_STROKE } from "../types/geometry";
 import { createId } from "../utils/id";
 import { extractContours, joinContours, splitContourAt, splitContourAtPoints } from "../engine/geometry/topology";
 import { convertPoint } from "../engine/geometry/nodeHandles";
-import { ancestors, findGroup, groupMembers, groupRange, visibleRows } from "../features/layers/layerTree";
+import {
+  ancestors,
+  effectiveLocked,
+  findGroup,
+  groupMembers,
+  groupRange,
+  visibleRows,
+} from "../features/layers/layerTree";
 import { DEFAULT_METRICS } from "../constants/metrics";
 import {
   cloneLayer,
@@ -332,7 +339,7 @@ export const useDocumentStore = create<DocumentState>()(
         if (!target) return;
         const glyph = s.glyphs[target.glyphId];
         const layer = glyph ? findLayer(glyph, target.layerId) : undefined;
-        if (!glyph || !layer || layer.locked) return;
+        if (!glyph || !layer || effectiveLocked(glyph, layer)) return;
         const nextGlyph = updateLayerContours(glyph, target.layerId, fn);
         set({ glyphs: { ...s.glyphs, [target.glyphId]: nextGlyph } });
       };
@@ -359,7 +366,7 @@ export const useDocumentStore = create<DocumentState>()(
         if (!glyph) return;
         const ids = new Set(contourIds);
         const layers = glyph.layers.map((layer) => {
-          if (layer.locked) return layer;
+          if (effectiveLocked(glyph, layer)) return layer;
           let changed = false;
           const contours = layer.contours.map((c) => {
             if (!ids.has(c.id)) return c;
@@ -580,7 +587,7 @@ export const useDocumentStore = create<DocumentState>()(
           if (!glyph) return;
           const byId = new Map(updated.map((c) => [c.id, c] as const));
           const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
+            if (effectiveLocked(glyph, layer)) return layer;
             let changed = false;
             const contours = layer.contours.map((c) => {
               const next = byId.get(c.id);
@@ -697,7 +704,7 @@ export const useDocumentStore = create<DocumentState>()(
           }
           const layers = glyph.layers.map((layer) => {
             const byContour = byLayer.get(layer.id);
-            if (!byContour || layer.locked) return layer;
+            if (!byContour || effectiveLocked(glyph, layer)) return layer;
             const contours = layer.contours
               .map((c) => {
                 const drop = byContour.get(c.id);
@@ -728,7 +735,7 @@ export const useDocumentStore = create<DocumentState>()(
           }
           const layers = glyph.layers.map((layer) => {
             const byContour = byLayer.get(layer.id);
-            if (!byContour || layer.locked) return layer;
+            if (!byContour || effectiveLocked(glyph, layer)) return layer;
             const contours = layer.contours.flatMap((c) => {
               const drop = byContour.get(c.id);
               if (!drop) return [c];
@@ -749,7 +756,7 @@ export const useDocumentStore = create<DocumentState>()(
           if (!glyph) return;
           let didCut = false;
           const layers = glyph.layers.map((layer) => {
-            if (layer.id !== layerId || layer.locked) return layer;
+            if (layer.id !== layerId || effectiveLocked(glyph, layer)) return layer;
             const contours = layer.contours.flatMap((c) => {
               if (c.id !== contourId) return [c];
               const out = splitContourAt(c, segIndex, t);
@@ -781,7 +788,7 @@ export const useDocumentStore = create<DocumentState>()(
           let didCut = false;
           const layers = glyph.layers.map((layer) => {
             const byContour = byLayer.get(layer.id);
-            if (!byContour || layer.locked) return layer;
+            if (!byContour || effectiveLocked(glyph, layer)) return layer;
             const contours = layer.contours.flatMap((c) => {
               const cc = byContour.get(c.id);
               if (!cc) return [c];
@@ -805,7 +812,7 @@ export const useDocumentStore = create<DocumentState>()(
           if (!glyph) return;
           let changed = false;
           const layers = glyph.layers.map((layer) => {
-            if (layer.id !== layerId || layer.locked) return layer;
+            if (layer.id !== layerId || effectiveLocked(glyph, layer)) return layer;
             const contours = layer.contours.flatMap((c) => {
               if (c.id !== contourId) return [c];
               const pieces = splitContourAtPoints(c, [entry, exit]);
@@ -850,7 +857,7 @@ export const useDocumentStore = create<DocumentState>()(
           }
           const layers = glyph.layers.map((layer) => {
             const byContour = byLayer.get(layer.id);
-            if (!byContour || layer.locked) return layer;
+            if (!byContour || effectiveLocked(glyph, layer)) return layer;
             const contours = layer.contours.map((c) => {
               const ids = byContour.get(c.id);
               if (!ids) return c;
@@ -940,7 +947,7 @@ export const useDocumentStore = create<DocumentState>()(
           if (!glyph) return;
           const drop = new Set(contourIds);
           const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
+            if (effectiveLocked(glyph, layer)) return layer;
             const kept = layer.contours.filter((c) => !drop.has(c.id));
             return kept.length === layer.contours.length ? layer : { ...layer, contours: kept };
           });
@@ -969,7 +976,7 @@ export const useDocumentStore = create<DocumentState>()(
               const kept = layer.contours.filter((c) => !movedIds.has(c.id));
               return { ...layer, contours: [...kept, ...moving] };
             }
-            if (layer.locked) return layer;
+            if (effectiveLocked(glyph, layer)) return layer;
             const kept = layer.contours.filter((c) => !movedIds.has(c.id));
             return kept.length === layer.contours.length ? layer : { ...layer, contours: kept };
           });
@@ -992,7 +999,7 @@ export const useDocumentStore = create<DocumentState>()(
           const dest = { ...makeEmptyLayer(nextLayerName(glyph)), contours: moving };
           // Drop the moved contours from their sources, then add the new layer on top.
           const stripped = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
+            if (effectiveLocked(glyph, layer)) return layer;
             const kept = layer.contours.filter((c) => !movedIds.has(c.id));
             return kept.length === layer.contours.length ? layer : { ...layer, contours: kept };
           });

@@ -198,6 +198,29 @@ export function visibleRows(glyph: Glyph): TreeRow[] {
   return rows;
 }
 
+/**
+ * The glyph's layers with GROUP INHERITANCE folded into `visible` / `locked`.
+ *
+ * This is how group visibility/lock reaches the ~20 call sites that already filter on
+ * those two flags: they swap `glyph.layers` for `resolvedLayers(glyph)` and keep their
+ * existing predicate. Without it, every one of those filters would need its own copy of
+ * the ancestor walk.
+ *
+ * IDENTITY (Invariant 3): a glyph with no groups returns the SAME array reference, and
+ * a layer no group affects keeps its own object. So an ungrouped document is completely
+ * untouched — including the identity-keyed geometry caches — and a grouped one only
+ * churns the layers a group actually changes. Call sites that feed a geometry memo
+ * should still wrap this in `useMemo` on the glyph.
+ */
+export function resolvedLayers(glyph: Glyph): Layer[] {
+  if (!glyph.layerGroups?.length) return glyph.layers;
+  return glyph.layers.map((l) => {
+    const visible = effectiveVisible(glyph, l);
+    const locked = effectiveLocked(glyph, l);
+    return visible === l.visible && locked === l.locked ? l : { ...l, visible, locked };
+  });
+}
+
 /** Layer ids whose rows are currently visible (not inside a collapsed group). */
 export function visibleLayerIds(glyph: Glyph): string[] {
   return glyph.layers.filter((l) => !underCollapsed(glyph, l.groupId)).map((l) => l.id);

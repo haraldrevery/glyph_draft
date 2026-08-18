@@ -4,6 +4,7 @@ import type { GeometryService } from "../../engine/geometry/GeometryService";
 import { ensureWinding } from "../../engine/geometry/path";
 import { withCorners } from "../../engine/geometry/corners";
 import { blendContours } from "../../engine/geometry/blend";
+import { resolvedLayers } from "../layers/layerTree";
 
 /** Default in-between steps for a Blend pair when the UI hasn't set one. */
 const DEFAULT_BLEND_STEPS = 4;
@@ -363,7 +364,7 @@ export function glyphFillGroups(
   const cache = cacheFor(opts);
   const cached = cache.get(glyph);
   if (cached) return cached;
-  const layers: FillLayer[] = glyph.layers
+  const layers: FillLayer[] = resolvedLayers(glyph)
     .filter((l) => l.visible)
     .map((l) => ({ id: l.id, contours: l.contours, ...(l.baked ? { baked: true } : {}) }));
   const groups = buildFillGroups(layers, glyph.booleanPairs ?? [], geom, opts);

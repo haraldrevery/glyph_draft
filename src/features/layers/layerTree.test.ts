@@ -9,6 +9,7 @@ import {
   groupMembers,
   groupRange,
   isContiguous,
+  resolvedLayers,
   visibleRows,
 } from "./layerTree";
 import type { Glyph, Layer, LayerGroup } from "../../types/document";
@@ -186,5 +187,42 @@ describe("visibleRows", () => {
   it("keeps a childless group visible in the list", () => {
     const g = glyph([L("a")], [G("EMPTY")]);
     expect(ids(g)).toContain("[EMPTY]");
+  });
+});
+
+describe("resolvedLayers", () => {
+  it("returns the SAME array when there are no groups (identity preserved)", () => {
+    const g = glyph([L("a"), L("b")]);
+    expect(resolvedLayers(g)).toBe(g.layers);
+  });
+
+  it("keeps the identity of layers no group affects", () => {
+    const g = glyph([L("out"), L("in", "X")], [G("X", undefined, { visible: false })]);
+    const out = resolvedLayers(g);
+    expect(out[0]).toBe(g.layers[0]); // untouched layer keeps its object
+    expect(out[1]).not.toBe(g.layers[1]); // this one really changed
+  });
+
+  it("folds a hidden group into its members' visible flag", () => {
+    const g = glyph([L("a", "X")], [G("X", undefined, { visible: false })]);
+    expect(resolvedLayers(g)[0]!.visible).toBe(false);
+  });
+
+  it("folds a locked group into its members' locked flag", () => {
+    const g = glyph([L("a", "X")], [G("X", undefined, { locked: true })]);
+    expect(resolvedLayers(g)[0]!.locked).toBe(true);
+  });
+
+  it("inherits through nesting", () => {
+    const g = glyph(
+      [L("a", "Y")],
+      [G("X", undefined, { visible: false }), G("Y", "X")],
+    );
+    expect(resolvedLayers(g)[0]!.visible).toBe(false);
+  });
+
+  it("never re-enables a layer the user hid individually", () => {
+    const g = glyph([L("a", "X", { visible: false })], [G("X")]);
+    expect(resolvedLayers(g)[0]!.visible).toBe(false);
   });
 });

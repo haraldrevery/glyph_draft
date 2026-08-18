@@ -15,6 +15,7 @@ import {
 import { isEditable } from "../../../utils/dom";
 import type { Contour } from "../../../types/geometry";
 import type { Vec2, Viewport } from "../../../types/viewport";
+import { resolvedLayers } from "../../layers/layerTree";
 
 /**
  * The transform box (Ctrl+T): a bounding box over the current node selection with
@@ -128,7 +129,7 @@ export function TransformBox({ viewport }: { viewport: Viewport }) {
     const ids = new Set(selection.map((r) => r.pointId));
     const origin: Contour[] = [];
     const posById = new Map<string, Vec2>();
-    for (const layer of glyph.layers) {
+    for (const layer of resolvedLayers(glyph)) {
       for (const c of layer.contours) {
         let touched = false;
         for (const p of c.points) {

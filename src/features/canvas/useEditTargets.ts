@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useActiveGlyph, useActiveLayer } from "../../state/documentStore";
 import { useEditorStore } from "../../state/editorStore";
 import type { Contour } from "../../types/geometry";
+import { resolvedLayers } from "../layers/layerTree";
 
 /**
  * The contours a per-path panel (Stroke, Fill) edits: every contour owning a
@@ -17,7 +18,7 @@ export function useEditTargets(): { targets: Contour[]; targetIds: string[] } {
   const selection = useEditorStore((s) => s.selection);
 
   const targets = useMemo<Contour[]>(() => {
-    const editable = (glyph?.layers ?? []).filter((l) => !l.locked);
+    const editable = (glyph ? resolvedLayers(glyph) : []).filter((l) => !l.locked);
     const selectedIds = new Set(selection.map((r) => r.contourId));
     if (selectedIds.size > 0) {
       return editable.flatMap((l) => l.contours.filter((c) => selectedIds.has(c.id)));

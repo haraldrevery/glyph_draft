@@ -5,6 +5,7 @@ import { cloneContourWithNewIds } from "../../state/glyphHelpers";
 import { extractContours } from "../../engine/geometry/topology";
 import type { Contour, PointRef } from "../../types/geometry";
 import type { Glyph, Layer } from "../../types/document";
+import { resolvedLayers } from "../layers/layerTree";
 
 /**
  * Copy / cut / paste / select-all as plain, React-free functions (they read the
@@ -28,7 +29,9 @@ function activeLayer(): Layer | null {
   const d = useDocumentStore.getState();
   const glyph = activeGlyph();
   if (!glyph || !d.activeLayerId) return null;
-  return glyph.layers.find((l) => l.id === d.activeLayerId) ?? null;
+  // Resolved, so a layer inside a LOCKED GROUP reports locked to the paste/duplicate
+  // guards below (its own flag may well be false).
+  return resolvedLayers(glyph).find((l) => l.id === d.activeLayerId) ?? null;
 }
 
 /** Contours owning a selected anchor, gathered across ALL layers (paint order). */
@@ -39,7 +42,7 @@ function selectedContoursAcrossLayers(): Contour[] {
     useEditorStore.getState().selection.map((r) => r.pointId),
   );
   const out: Contour[] = [];
-  for (const layer of glyph.layers) {
+  for (const layer of resolvedLayers(glyph)) {
     for (const c of layer.contours) {
       if (c.points.some((p) => selectedPointIds.has(p.id))) out.push(c);
     }
@@ -81,7 +84,7 @@ export function cut(): void {
   }
 
   const fragments: Contour[] = [];
-  for (const layer of glyph.layers) {
+  for (const layer of resolvedLayers(glyph)) {
     for (const c of layer.contours) {
       const sel = selByContour.get(c.id);
       if (sel) fragments.push(...extractContours(c, sel));
@@ -130,7 +133,7 @@ export function selectAll(): void {
   const glyph = activeGlyph();
   if (!glyph) return;
   const refs: PointRef[] = [];
-  for (const layer of glyph.layers) {
+  for (const layer of resolvedLayers(glyph)) {
     if (layer.locked || !layer.visible) continue;
     refs.push(...allAnchorRefs(layer.contours, layer.id));
   }

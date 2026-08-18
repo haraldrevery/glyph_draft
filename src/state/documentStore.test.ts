@@ -811,6 +811,36 @@ describe("layer groups", () => {
     });
   });
 
+  describe("inherited lock (stage 3)", () => {
+    it("a layer in a LOCKED GROUP refuses geometry edits", () => {
+      seedTwoLayers(layer("LA", [OUTER]), layer("LB", []));
+      const gid = state().groupLayers(["LA"])!;
+      state().setGroupLocked(gid, true);
+      // The layer's OWN locked flag is still false — only the group is locked.
+      expect(g().layers.find((l) => l.id === "LA")!.locked).toBe(false);
+      state().setContourPaint(["outer"], { fill: "#ff0000" });
+      expect(layersById()["LA"]!.contours[0]!.paint).toBeUndefined();
+    });
+
+    it("unlocking the group restores editability", () => {
+      seedTwoLayers(layer("LA", [OUTER]), layer("LB", []));
+      const gid = state().groupLayers(["LA"])!;
+      state().setGroupLocked(gid, true);
+      state().setGroupLocked(gid, false);
+      state().setContourPaint(["outer"], { fill: "#ff0000" });
+      expect(layersById()["LA"]!.contours[0]!.paint).toEqual({ fill: "#ff0000" });
+    });
+
+    it("inherits a lock from an OUTER group through a nested one", () => {
+      seedTwoLayers(layer("LA", [OUTER]), layer("LB", []));
+      const outer = state().groupLayers(["LA"])!;
+      state().groupLayers(["LA"]); // inner group, unlocked
+      state().setGroupLocked(outer, true);
+      state().setContourPaint(["outer"], { fill: "#ff0000" });
+      expect(layersById()["LA"]!.contours[0]!.paint).toBeUndefined();
+    });
+  });
+
   describe("selectLayerRange with groups", () => {
     it("a range that spans a COLLAPSED group takes all its members", () => {
       seedLayers(["a", "b", "c", "d"]);
