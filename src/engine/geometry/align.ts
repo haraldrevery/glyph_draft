@@ -1,4 +1,5 @@
 import type { Contour } from "../../types/geometry";
+import { cubicBounds } from "./path";
 
 /**
  * Pure alignment math (no DOM, no store) — Illustrator-style align + distribute over
@@ -41,6 +42,36 @@ export function contourBounds(contour: Contour): BBox | null {
     }
   }
   return Number.isFinite(minX) ? { minX, minY, maxX, maxY } : null;
+}
+
+/**
+ * EXACT axis-aligned bounds of a contour — every segment measured by `cubicBounds`,
+ * so a curve is bounded by the curve itself rather than by its control handles.
+ * Tighter than `contourBounds` wherever handles overshoot (which is most curves);
+ * identical on handle-free paths. Includes the closing segment when `closed`.
+ *
+ * `contourBounds` is kept for align/distribute, where the handle-inclusive superset
+ * is both cheaper and the long-standing behaviour; use this one where slack shows,
+ * e.g. the export's crop-to-artwork frame.
+ */
+export function contourTightBounds(contour: Contour): BBox | null {
+  const pts = contour.points;
+  if (pts.length === 0) return null;
+  const first = pts[0]!;
+  const box: BBox = { minX: first.x, minY: first.y, maxX: first.x, maxY: first.y };
+  const last = contour.closed ? pts.length : pts.length - 1;
+  for (let i = 0; i < last; i++) {
+    const a = pts[i]!;
+    const b = pts[(i + 1) % pts.length]!;
+    // A missing handle collapses onto its own anchor — the cubic degenerates to the
+    // straight segment, which is exactly the geometry `contourToPath` emits.
+    const seg = cubicBounds(a, a.handleOut ?? a, b.handleIn ?? b, b);
+    if (seg.minX < box.minX) box.minX = seg.minX;
+    if (seg.minY < box.minY) box.minY = seg.minY;
+    if (seg.maxX > box.maxX) box.maxX = seg.maxX;
+    if (seg.maxY > box.maxY) box.maxY = seg.maxY;
+  }
+  return box;
 }
 
 function union(boxes: BBox[]): BBox {

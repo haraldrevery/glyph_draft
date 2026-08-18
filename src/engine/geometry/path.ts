@@ -1,5 +1,8 @@
 import type { AnchorPoint, Contour, Winding } from "../../types/geometry";
 import type { Vec2 } from "../../types/viewport";
+// Type-only (erased at compile time), so the value import align.ts makes of
+// `cubicBounds` below is NOT a runtime cycle. One BBox shape for the whole codebase.
+import type { BBox } from "./align";
 
 /**
  * The bezier math core. Two responsibilities, both pure:
@@ -158,4 +161,52 @@ export function splitCubic(
     left: [p0, q0, r0, s],
     right: [s, r1, q2, p3],
   };
+}
+
+/**
+ * EXACT axis-aligned bounds of a cubic bezier — the curve's real extent, not the
+ * (often much larger) box spanned by its control points. Per axis the extrema are
+ * the endpoints plus any root of the derivative in (0,1): B'(t) is a quadratic, so
+ * at most two roots per axis, each evaluated with `cubicAt`.
+ *
+ * Used by the export's tight crop, where a handle-inclusive box would leave visible
+ * slack around curved artwork.
+ */
+export function cubicBounds(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2): BBox {
+  const box: BBox = {
+    minX: Math.min(p0.x, p3.x),
+    minY: Math.min(p0.y, p3.y),
+    maxX: Math.max(p0.x, p3.x),
+    maxY: Math.max(p0.y, p3.y),
+  };
+  const include = (pt: Vec2) => {
+    if (pt.x < box.minX) box.minX = pt.x;
+    if (pt.x > box.maxX) box.maxX = pt.x;
+    if (pt.y < box.minY) box.minY = pt.y;
+    if (pt.y > box.maxY) box.maxY = pt.y;
+  };
+  for (const t of derivativeRoots(p0.x, p1.x, p2.x, p3.x)) include(cubicAt(p0, p1, p2, p3, t));
+  for (const t of derivativeRoots(p0.y, p1.y, p2.y, p3.y)) include(cubicAt(p0, p1, p2, p3, t));
+  return box;
+}
+
+/**
+ * Roots of B'(t) = 0 on ONE axis, kept to the open interval (0,1) — the endpoints are
+ * already counted by the caller. B'(t)/3 = a·t² + b·t + c with the coefficients below;
+ * a ≈ 0 degenerates to the linear case (a straight or evenly-spaced segment).
+ */
+function derivativeRoots(v0: number, v1: number, v2: number, v3: number): number[] {
+  const a = -v0 + 3 * v1 - 3 * v2 + v3;
+  const b = 2 * (v0 - 2 * v1 + v2);
+  const c = v1 - v0;
+  const inRange = (t: number) => t > 0 && t < 1;
+  if (Math.abs(a) < 1e-12) {
+    if (Math.abs(b) < 1e-12) return [];
+    const t = -c / b;
+    return inRange(t) ? [t] : [];
+  }
+  const disc = b * b - 4 * a * c;
+  if (disc < 0) return [];
+  const root = Math.sqrt(disc);
+  return [(-b + root) / (2 * a), (-b - root) / (2 * a)].filter(inRange);
 }

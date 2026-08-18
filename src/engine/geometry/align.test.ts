@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { contourBounds, alignDeltas, type BBox } from "./align";
+import { contourBounds, contourTightBounds, alignDeltas, type BBox } from "./align";
 import type { Contour } from "../../types/geometry";
 
 /** A rectangle contour from (x,y) sized w×h. */
@@ -69,5 +69,46 @@ describe("alignDeltas", () => {
     expect(alignDeltas([box(0, 0, 10, 10), box(50, 0, 60, 10)], "distributeH")).toEqual([
       { dx: 0, dy: 0 }, { dx: 0, dy: 0 },
     ]);
+  });
+});
+
+describe("contourTightBounds", () => {
+  it("matches contourBounds on a handle-free path", () => {
+    const r = rect("r", 10, 20, 30, 40);
+    expect(contourTightBounds(r)).toEqual(contourBounds(r));
+  });
+
+  it("is tighter than contourBounds where handles overshoot the curve", () => {
+    // An open segment whose handles reach y=30; the curve tops out at y=22.5.
+    const c: Contour = {
+      id: "c",
+      closed: false,
+      points: [
+        { id: "a", type: "smooth", x: 0, y: 0, handleOut: { x: 0, y: 30 } },
+        { id: "b", type: "smooth", x: 10, y: 0, handleIn: { x: 10, y: 30 } },
+      ],
+    };
+    expect(contourBounds(c)!.maxY).toBe(30);
+    expect(contourTightBounds(c)!.maxY).toBeCloseTo(22.5, 9);
+  });
+
+  it("includes the closing segment of a closed contour", () => {
+    // The bulge lives ONLY on the last→first segment, so an open path misses it.
+    const pts = [
+      { id: "a", type: "smooth" as const, x: 0, y: 0, handleIn: { x: -30, y: 0 } },
+      { id: "b", type: "corner" as const, x: 10, y: 0 },
+      { id: "c", type: "smooth" as const, x: 10, y: 10, handleOut: { x: -30, y: 10 } },
+    ];
+    expect(contourTightBounds({ id: "open", closed: false, points: pts })!.minX).toBe(0);
+    expect(contourTightBounds({ id: "shut", closed: true, points: pts })!.minX).toBeLessThan(0);
+  });
+
+  it("returns null for an empty contour and a point for a single anchor", () => {
+    expect(contourTightBounds({ id: "e", closed: false, points: [] })).toBeNull();
+    expect(contourTightBounds({
+      id: "one",
+      closed: false,
+      points: [{ id: "p", type: "corner", x: 4, y: 5 }],
+    })).toEqual({ minX: 4, minY: 5, maxX: 4, maxY: 5 });
   });
 });
