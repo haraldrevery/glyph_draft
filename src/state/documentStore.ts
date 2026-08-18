@@ -212,6 +212,45 @@ export const useDocumentStore = create<DocumentState>()(
         set({ glyphs: { ...s.glyphs, [target.glyphId]: nextGlyph } });
       };
 
+      /**
+       * Cross-layer per-contour edit: apply `fn` to every contour named in
+       * `contourIds`, across ALL unlocked layers of the active glyph, as ONE undo
+       * step. A node selection routinely spans layers (each path is often its own
+       * layer), which is why this is not scoped to the active layer.
+       *
+       * `fn` returns the replacement contour, or `null` to leave that contour alone —
+       * the stroke-only actions use `null` so they never add a stroke to an unstroked
+       * path. Layers with no match keep their identity, which the identity-keyed
+       * geometry caches depend on (Invariant 3).
+       *
+       * Every per-contour STYLE action goes through here, so adding the next one
+       * (a custom cap, a per-node corner) is a few lines rather than another copy of
+       * this traversal.
+       */
+      const patchContours = (contourIds: string[], fn: (c: Contour) => Contour | null): void => {
+        const s = get();
+        if (!s.activeGlyphId) return;
+        const glyph = s.glyphs[s.activeGlyphId];
+        if (!glyph) return;
+        const ids = new Set(contourIds);
+        const layers = glyph.layers.map((layer) => {
+          if (layer.locked) return layer;
+          let changed = false;
+          const contours = layer.contours.map((c) => {
+            if (!ids.has(c.id)) return c;
+            const next = fn(c);
+            if (!next) return c;
+            changed = true;
+            return next;
+          });
+          return changed ? { ...layer, contours } : layer;
+        });
+        // NB: always commits, exactly as the eight hand-written versions did — a
+        // no-match call still produces a new glyph object (and so an undo step).
+        // Preserved deliberately; changing it is a behaviour change, not a refactor.
+        set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
+      };
+
       /** Layer-array edit on the active glyph (lock does not apply). */
       const mutateLayers = (fn: (layers: Layer[]) => Layer[]): void => {
         const s = get();
@@ -418,204 +457,85 @@ export const useDocumentStore = create<DocumentState>()(
         },
 
         setContourStroke: (contourIds, stroke) => {
-          // Cross-layer: a node selection can span layers (each path is often its own
-          // layer), so set the stroke on every matching contour across all unlocked
-          // layers — one undo step. Unchanged layers keep identity (see `changed`).
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const applyStroke = (c: Contour): Contour => {
+          // Whole-stroke replace (the enable toggle + preset apply). `null` removes it.
+          // Shape edits use patchContourStroke instead, so they can't clobber colour.
+          patchContours(contourIds, (c) => {
             if (stroke) return { ...c, stroke };
             const next = { ...c };
             delete next.stroke;
             return next;
-          };
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id)) return c;
-              changed = true;
-              return applyStroke(c);
-            });
-            return changed ? { ...layer, contours } : layer;
           });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
         },
 
         patchContourStroke: (contourIds, patch) => {
           // Merge ONLY the changed shape field(s) into each contour's OWN stroke (seeding a
           // default for an unstroked target), so a Stroke-panel shape edit preserves each
           // path's colour/gradient and other differing fields — it never rewrites colour.
-          // One undo step; mirrors setContourStroke's layer surgery.
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id)) return c;
-              changed = true;
-              return { ...c, stroke: { ...(c.stroke ?? DEFAULT_STROKE), ...patch } };
-            });
-            return changed ? { ...layer, contours } : layer;
-          });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
+          patchContours(contourIds, (c) => ({
+            ...c,
+            stroke: { ...(c.stroke ?? DEFAULT_STROKE), ...patch },
+          }));
         },
 
         removeStrokeKeys: (contourIds, keys) => {
           // Delete the given stroke field(s) per contour (preserving the rest, incl. colour).
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id) || !c.stroke) return c;
-              changed = true;
-              const stroke = { ...c.stroke };
-              for (const k of keys) delete stroke[k];
-              return { ...c, stroke };
-            });
-            return changed ? { ...layer, contours } : layer;
+          patchContours(contourIds, (c) => {
+            if (!c.stroke) return null; // never adds a stroke to an unstroked path
+            const stroke = { ...c.stroke };
+            for (const k of keys) delete stroke[k];
+            return { ...c, stroke };
           });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
         },
 
         setContourPaint: (contourIds, paint) => {
-          // Cross-layer fill paint (default ink = no paint). One undo step; mirrors
-          // setContourStroke. `null` clears the paint back to the default black.
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const applyPaint = (c: Contour): Contour => {
+          // Fill paint (default ink = no paint). `null` clears it back to black.
+          patchContours(contourIds, (c) => {
             if (paint) return { ...c, paint };
             const next = { ...c };
             delete next.paint;
             return next;
-          };
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id)) return c;
-              changed = true;
-              return applyPaint(c);
-            });
-            return changed ? { ...layer, contours } : layer;
           });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
         },
 
         setContourFilled: (contourIds, filled) => {
-          // Cross-layer interior-fill flag (independent of stroke). One undo step;
-          // mirrors setContourPaint. `null` clears it back to the legacy default.
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const applyFilled = (c: Contour): Contour => {
+          // Interior-fill flag, INDEPENDENT of stroke (a closed path can have both).
+          // `null` clears it back to the legacy default rule.
+          patchContours(contourIds, (c) => {
             if (filled === null) {
               const next = { ...c };
               delete next.filled;
               return next;
             }
             return { ...c, filled };
-          };
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id)) return c;
-              changed = true;
-              return applyFilled(c);
-            });
-            return changed ? { ...layer, contours } : layer;
           });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
         },
 
         setStrokeColor: (contourIds, color) => {
-          // Cross-layer outline colour — sets `stroke.color` ONLY on contours that already
-          // have a stroke (never adds one to an unstroked path). One undo step.
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id) || !c.stroke) return c;
-              changed = true;
-              return { ...c, stroke: { ...c.stroke, color } };
-            });
-            return changed ? { ...layer, contours } : layer;
-          });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
+          // Outline colour — ONLY on contours that already have a stroke.
+          patchContours(contourIds, (c) =>
+            c.stroke ? { ...c, stroke: { ...c.stroke, color } } : null,
+          );
         },
 
         setStrokeGradient: (contourIds, gradient) => {
-          // Cross-layer outline gradient — sets/clears `stroke.gradient` ONLY on contours
-          // that already have a stroke. `null` removes it. One undo step.
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id) || !c.stroke) return c;
-              changed = true;
-              if (gradient) return { ...c, stroke: { ...c.stroke, gradient } };
-              const stroke = { ...c.stroke };
-              delete stroke.gradient;
-              return { ...c, stroke };
-            });
-            return changed ? { ...layer, contours } : layer;
+          // Outline gradient — ONLY on contours that already have a stroke. `null` removes it.
+          patchContours(contourIds, (c) => {
+            if (!c.stroke) return null;
+            if (gradient) return { ...c, stroke: { ...c.stroke, gradient } };
+            const stroke = { ...c.stroke };
+            delete stroke.gradient;
+            return { ...c, stroke };
           });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
         },
 
         setContourCorner: (contourIds, corner) => {
-          // Cross-layer path-corner style (round/chamfer/inverted). One undo step;
-          // mirrors setContourPaint. `null` clears it back to sharp corners.
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const applyCorner = (c: Contour): Contour => {
+          // Path-corner style (round/chamfer/inverted). `null` clears to sharp corners.
+          patchContours(contourIds, (c) => {
             if (corner) return { ...c, corner };
             const next = { ...c };
             delete next.corner;
             return next;
-          };
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id)) return c;
-              changed = true;
-              return applyCorner(c);
-            });
-            return changed ? { ...layer, contours } : layer;
           });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
         },
 
         updatePoint: (contourId, point) =>
