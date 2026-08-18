@@ -7,6 +7,8 @@ import { exportFileName, glyphLabel } from "../../state/glyphHelpers";
 import { DEFAULT_METRICS } from "../../constants/metrics";
 import { glyphToSvg } from "./glyphToSvg";
 import { createExportService } from "./ExportService";
+import { defaultArchiveName, resolveArchiveName } from "./exportNaming";
+import { isTauri } from "../../storage/platform";
 import { type StyleTransform, REGULAR_STYLE } from "./styleTransform";
 
 /** Synthetic-style presets; the sliders below stay editable for fine-tuning. */
@@ -53,6 +55,7 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
   const [scope, setScope] = useState<"all" | "active">("all");
   const [style, setStyle] = useState<StyleTransform>(REGULAR_STYLE);
   const [silhouette, setSilhouette] = useState(false);
+  const [archiveName, setArchiveName] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
 
   const close = () => {
@@ -74,6 +77,11 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [open, onClose]);
 
+  // The auto archive name, also shown as the input's placeholder so the user can see
+  // what they get by leaving it blank.
+  const exportTag = [styleTag(style), silhouette ? "silhouette" : ""].filter(Boolean).join("-");
+  const autoName = defaultArchiveName(exportTag);
+
   const runExport = async () => {
     setStatus({ kind: "busy" });
     try {
@@ -93,9 +101,8 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
           name: exportFileName(g.codepoint),
           content: glyphToSvg(g, DEFAULT_METRICS, { scalePct, style, mergeHalftones, silhouette }),
         }));
-        const tag = [styleTag(style), silhouette ? "silhouette" : ""].filter(Boolean).join("-");
         result = await service.exportGlyphs(files, {
-          archiveName: `glyphs${tag ? `-${tag}` : ""}.svg.zip`,
+          archiveName: resolveArchiveName(archiveName, exportTag),
         });
       }
       if (result.cancelled) {
@@ -155,6 +162,25 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
               : "No active glyph."
             : `${glyphs.length} glyph${glyphs.length === 1 ? "" : "s"} → individual u_xxxx.svg files.`}
         </p>
+
+        {scope === "all" && !isTauri() && (
+          <label className="export-field">
+            <span className="export-field-label">Archive name</span>
+            <input
+              type="text"
+              className="export-field-input"
+              value={archiveName}
+              placeholder={autoName}
+              spellCheck={false}
+              onChange={(e) => setArchiveName(e.target.value)}
+            />
+          </label>
+        )}
+        {scope === "all" && !isTauri() && (
+          <p className="export-modal-sub">
+            Leave blank for <code>{autoName}</code>. A “.zip” ending is added if you omit it.
+          </p>
+        )}
 
         <NumberInput
           label="Universal scale %"

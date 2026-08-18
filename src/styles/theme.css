@@ -2306,6 +2306,36 @@ body {
   color: var(--text);
 }
 
+/* Labelled text field in the export modal (the archive name). Mirrors the
+   .fill-hex-input treatment so inputs look the same across panels and modals. */
+.export-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.export-field-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.export-field-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  padding: 2px 6px;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.export-field-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .export-status {
   margin: 0;
   font-size: 12px;

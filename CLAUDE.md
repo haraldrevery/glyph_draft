@@ -123,7 +123,10 @@ src/
       corners.ts                 # Pure per-path corner pre-pass: roundCorners (round/chamfer/invertedRound, clamped) — non-destructive, run in renderContours before stroke-expand/export
   state/
     viewportStore.ts             # Zoom/pan/grid/theme — NOT undoable
-    documentStore.ts             # Glyphs/layers — plain store; undo/redo is per-glyph (see history.ts)
+    documentStore.ts             # Glyphs/layers — plain store; undo/redo is per-glyph (see history.ts).
+                                 #   Per-contour STYLE actions all go through ONE `patchContours(ids, fn)`
+                                 #   closure helper (cross-layer, skips locked, one undo step) — add the
+                                 #   next style field there, don't re-copy the traversal
     history.ts                   # PER-GLYPH undo/redo (Map<glyphId,{past,future}>, limit 200) — useHistoryStore/useHistory; structural glyph add/delete not recorded
     editorStore.ts               # Live ephemeral state (pen in-progress, drag) — NOT undoable
     clipboardStore.ts            # Clipboard — survives undo and tool switches
@@ -200,7 +203,8 @@ src/
       ExportService.ts          # Platform seam + createExportService() factory
       WebExportService.ts       # Web impl: fflate zip + browser download
       TauriExportService.ts     # Desktop impl: folder picker + FS write (lazy)
-      ExportModal.tsx           # Scale-% + synthetic-style modal (opened from File → Export…)
+      exportNaming.ts           # Pure archive-name resolver (basename + sanitise; blank ⇒ auto name)
+      ExportModal.tsx           # Scale-% + synthetic-style + archive-name modal (File → Export…)
     import/                      # SVG import — drops imported art on a new (baked) layer
       svgImport.ts              # DOM walk → flatten transforms + Y-flip + fill→paint + correctWinding → Contour[]
     preview/                     # Text-preview window: type a string, see it in the glyphs
@@ -610,10 +614,12 @@ Tested in `strokeOutline.test.ts`.
     region (body-distance falloff) so abutting paths read as one tone with no seam. The flag threads
     through `buildFillGroups`/`glyphFillGroups` (cache keyed by it) to canvas/thumbnail/preview/export/merge;
     lone or differing-style halftones are unchanged. The single-path `halftoneStroke` is untouched.
-    **Debt-smart note:** `mergeHalftones` is the FIRST render-affecting global flag threaded as a
-    positional param through `buildFillGroups`/`glyphFillGroups`. If a SECOND such flag is ever needed,
-    switch these to a single `RenderOptions` object (and key the cache on it) rather than adding another
-    positional boolean — one flag is fine, two would make the signatures noisy.
+    **Render switches travel as a `RenderOptions` object** (`layerFills.ts`), threaded
+    `glyphToSvg` → `glyphFillGroups` → `buildFillGroups` → `renderContours`; the export adds its own
+    knobs via `GlyphSvgOptions extends RenderOptions`. Adding a new global render switch = a field on
+    that interface plus a case in `renderKey` (which keys the per-options glyph cache) — **never**
+    another positional boolean. This replaced positional flags after `glyphToSvg` reached six params
+    ending in two adjacent booleans (`mergeHalftones`, `silhouette`), where a swap type-checks silently.
 - **Terminal-handle cap angle** (the deferred Stage-5 feature, now shipped): the first
   node's `handleIn` / last node's `handleOut` are read as the cap **axis** — butt caps
   re-cut along it (`angledTerminal`), rectangle/serif take it as their `angle` when no
@@ -1025,7 +1031,7 @@ dark/light/paper themes.)
 | **Procedural / L-system brushes** | **Open** — see "Future seams" → Tier 2 |
 | **Per-NODE corner styles** | **Open** — see "Future seams" → Tier 3. Per-*path* `Contour.corner` is shipped |
 | i18n / language | **Open** — see "Future seams" → Tier 4 (deferred deliberately) |
-| Export (bulk u_xxxx.svg + universal scale) | **Shipped** — Phase 6; every glyph → `u_xxxx.svg`, universal scale %, web zip (fflate) / desktop folder write (Tauri); reuses `buildFillGroups` so output matches the canvas. Optional **Silhouette** toggle → flat solid black (no colour/gradient/opacity, holes preserved), `-silhouette`-tagged archive |
+| Export (bulk u_xxxx.svg + universal scale) | **Shipped** — Phase 6; every glyph → `u_xxxx.svg`, universal scale %, web zip (fflate) / desktop folder write (Tauri); reuses `buildFillGroups` so output matches the canvas. Optional **Silhouette** toggle → flat solid black (no colour/gradient/opacity, holes preserved), `-silhouette`-tagged archive. The web zip's **name is editable** in the modal (`exportNaming.ts`; blank = the auto `glyphs[-tag].svg.zip`, so the default is unchanged) — desktop is unaffected since the user picks a folder |
 | Synthetic Bold / Italic export | **Shipped** — `features/export/styleTransform.ts` + an Export-modal Style selector (Regular/Bold/Italic presets + Stretch %/Skew °/Outline-extension sliders). **Export-only** (source stays single-weight): fills are built UPRIGHT, then the skew/stretch is an **exact affine of the FINAL outline** (`transformContours`) — NOT a skeleton transform + stroke re-expansion (which re-exposed corner glitches); shearing finished beziers keeps sharp corners clean and counters intact (det>0 preserves CW-outer/CCW-hole). The fills also get an **x-only horizontal extension** (`extendOutlineX` — union/intersect of horizontally-shifted copies → bold thickens vertical stems only, height locked; negative thins, but the discrete intersect can facet sharp corners so Italic defaults to **skew-only**). `extendOutlineX` **splits CW outers from CCW holes** and smears each (grow ink + erode counters, then subtract) so counters DON'T fill solid (the geometry-service booleans flatten a contour set to a union of solids — feeding a whole annulus through `union` would lose the hole). Style-tagged archive name (`glyphs-bold/italic.svg.zip`) |
 | Robust/stable save (low corruption risk) | **Shipped** — single auto-persisted workspace; versioned format + `migrate()` seam, debounced autosave + File → Save (Ctrl/Cmd+S), double-buffered writes, main→backup→seed load fallback (see Invariant 7) |
 | Portable project export/import (continue on another computer, web ⇄ desktop) | **Shipped** — File → Export/Import project… writes/reads one `.glphdrft` file (legacy `.glyphforge` still imports; the versioned `serializeProject` envelope) via `features/project/`; import reuses `migrate()` (corruption-safe) then `loadGlyphs` + `useHistoryStore…clear()` |
