@@ -109,12 +109,12 @@ src/
       PolygonGeometryService.ts  # Test-only impl: dependency-free, flattens curves to polylines
       clip.ts                    # Planar-arrangement boolean clipper (the polygon ops)
       polygon.ts                 # Low-level polygon math: flatten, winding number, simplify
-      path.ts                    # Bezier path math + SVG `d` serialization (absolute coords)
+      path.ts                    # Bezier path math + SVG `d` serialization (absolute coords) + cubicBounds (exact curve extrema)
       svgPath.ts                 # Pure SVG path-`d` PARSER (M/L/H/V/C/S/Q/T/A/Z + relative; arc→cubic) for import
       primitives.ts              # makeLine/makeRectangle/makeEllipse/makePolygon — always CW winding
       topology.ts                # Pure node topology: extractContours (split/cut), joinContours (merge), splitContourAtPoints (multi-cut: scissors/knife/eraser; splitContourAt = single-cut wrapper)
       affine.ts                  # Pure 2D affine (transform box): scale/rotate/translate + transformSelected
-      align.ts                   # Pure align/distribute math (contourBounds + alignDeltas) for the Align panel
+      align.ts                   # Pure align/distribute math (contourBounds + alignDeltas) for the Align panel; contourTightBounds = exact-curve bounds (export crop)
       winding.ts                 # Winding detection and correction (nesting-depth based)
       freehand.ts                # Pure freehand fit: simplifyRDP + fitFreehand (Catmull-Rom handles, corner/close detection) for the pencil tool
       profile.ts                 # Pure monotone-cubic profile evaluator (evalProfile) — drives the width/nib-angle graphs
@@ -198,7 +198,7 @@ src/
     boolean/                     # info.md only — the Pathfinder UI lives in the
                                  #   Layers panel; combine is canvas/layerFills.ts
     export/                      # Phase 6 — bulk SVG export
-      glyphToSvg.ts              # Pure glyph→SVG string (reuses buildFillGroups; optional synthetic style; optional `silhouette` flag → every region flat solid black, no colour/gradient/opacity, holes preserved — FontForge-ready)
+      glyphToSvg.ts              # Pure glyph→SVG string (reuses buildFillGroups; optional synthetic style; optional `silhouette` flag → every region flat solid black, no colour/gradient/opacity, holes preserved — FontForge-ready; optional `tightCrop` flag → viewBox hugs the artwork instead of the em box)
       styleTransform.ts          # Export-only synthetic Bold/Italic: transformContours (skew/stretch the FINAL outline) + extendOutlineX (x-only smear/erode)
       ExportService.ts          # Platform seam + createExportService() factory
       WebExportService.ts       # Web impl: fflate zip + browser download
@@ -476,9 +476,17 @@ lazy-loaded); web downloads a single zip (`fflate`).
 - **SVG builder:** `glyphToSvg` (`features/export/glyphToSvg.ts`) reuses
   `buildFillGroups` so the export carries the same Pathfinder results as the
   canvas (Invariant 5). It Y-flips world→SVG via one wrapping `<g transform>` and
-  frames the `viewBox` to the em box (descender..ascender by the glyph's advance
-  width) in unscaled font units, so the scale % resizes only the artwork. Winding
-  is preserved from the pipeline, not re-normalized (see Invariant 4).
+  frames the `viewBox` to the **union** of the em box (descender..ascender by the
+  glyph's advance width) and the artwork's own bounds, in unscaled font units — so
+  the metric frame gives every glyph a shared baseline/sidebearings, overflowing
+  artwork is never clipped, and the scale % resizes only the artwork. The optional
+  **`tightCrop`** flag frames the **artwork alone** instead (em box dropped; falls
+  back to the em box on an empty glyph, and never emits a 0-size axis) — for artwork
+  use, since per-glyph cropping gives up the shared metrics a font import needs.
+  Artwork bounds are measured on the CURVES (`align.ts` `contourTightBounds` →
+  `path.ts` `cubicBounds`, exact bezier extrema), not on the control handles, so a
+  tight crop has no slack. Winding is preserved from the pipeline, not re-normalized
+  (see Invariant 4).
 - **Platform seam:** `ExportService` + `createExportService()` branch on
   `isTauri()` to `WebExportService` (zip) or `TauriExportService` (folder write),
   the Tauri impl dynamically imported so the web bundle stays `@tauri-apps`-free.
@@ -1031,7 +1039,7 @@ dark/light/paper themes.)
 | **Procedural / L-system brushes** | **Open** — see "Future seams" → Tier 2 |
 | **Per-NODE corner styles** | **Open** — see "Future seams" → Tier 3. Per-*path* `Contour.corner` is shipped |
 | i18n / language | **Open** — see "Future seams" → Tier 4 (deferred deliberately) |
-| Export (bulk u_xxxx.svg + universal scale) | **Shipped** — Phase 6; every glyph → `u_xxxx.svg`, universal scale %, web zip (fflate) / desktop folder write (Tauri); reuses `buildFillGroups` so output matches the canvas. Optional **Silhouette** toggle → flat solid black (no colour/gradient/opacity, holes preserved), `-silhouette`-tagged archive. The web zip's **name is editable** in the modal (`exportNaming.ts`; blank = the auto `glyphs[-tag].svg.zip`, so the default is unchanged) — desktop is unaffected since the user picks a folder |
+| Export (bulk u_xxxx.svg + universal scale) | **Shipped** — Phase 6; every glyph → `u_xxxx.svg`, universal scale %, web zip (fflate) / desktop folder write (Tauri); reuses `buildFillGroups` so output matches the canvas. Optional **Silhouette** toggle → flat solid black (no colour/gradient/opacity, holes preserved), `-silhouette`-tagged archive. Optional **Crop to artwork** toggle → the viewBox hugs each glyph's own ink (exact curve bounds) instead of the em square, so there is no empty frame — artwork use only, since it drops the shared baseline/sidebearings; `-cropped`-tagged archive. The web zip's **name is editable** in the modal (`exportNaming.ts`; blank = the auto `glyphs[-tag].svg.zip`, so the default is unchanged) — desktop is unaffected since the user picks a folder |
 | Synthetic Bold / Italic export | **Shipped** — `features/export/styleTransform.ts` + an Export-modal Style selector (Regular/Bold/Italic presets + Stretch %/Skew °/Outline-extension sliders). **Export-only** (source stays single-weight): fills are built UPRIGHT, then the skew/stretch is an **exact affine of the FINAL outline** (`transformContours`) — NOT a skeleton transform + stroke re-expansion (which re-exposed corner glitches); shearing finished beziers keeps sharp corners clean and counters intact (det>0 preserves CW-outer/CCW-hole). The fills also get an **x-only horizontal extension** (`extendOutlineX` — union/intersect of horizontally-shifted copies → bold thickens vertical stems only, height locked; negative thins, but the discrete intersect can facet sharp corners so Italic defaults to **skew-only**). `extendOutlineX` **splits CW outers from CCW holes** and smears each (grow ink + erode counters, then subtract) so counters DON'T fill solid (the geometry-service booleans flatten a contour set to a union of solids — feeding a whole annulus through `union` would lose the hole). Style-tagged archive name (`glyphs-bold/italic.svg.zip`) |
 | Robust/stable save (low corruption risk) | **Shipped** — single auto-persisted workspace; versioned format + `migrate()` seam, debounced autosave + File → Save (Ctrl/Cmd+S), double-buffered writes, main→backup→seed load fallback (see Invariant 7) |
 | Portable project export/import (continue on another computer, web ⇄ desktop) | **Shipped** — File → Export/Import project… writes/reads one `.glphdrft` file (legacy `.glyphforge` still imports; the versioned `serializeProject` envelope) via `features/project/`; import reuses `migrate()` (corruption-safe) then `loadGlyphs` + `useHistoryStore…clear()` |

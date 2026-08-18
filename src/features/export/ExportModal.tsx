@@ -55,6 +55,7 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
   const [scope, setScope] = useState<"all" | "active">("all");
   const [style, setStyle] = useState<StyleTransform>(REGULAR_STYLE);
   const [silhouette, setSilhouette] = useState(false);
+  const [tightCrop, setTightCrop] = useState(false);
   const [archiveName, setArchiveName] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
 
@@ -79,7 +80,9 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
 
   // The auto archive name, also shown as the input's placeholder so the user can see
   // what they get by leaving it blank.
-  const exportTag = [styleTag(style), silhouette ? "silhouette" : ""].filter(Boolean).join("-");
+  const exportTag = [styleTag(style), silhouette ? "silhouette" : "", tightCrop ? "cropped" : ""]
+    .filter(Boolean)
+    .join("-");
   const autoName = defaultArchiveName(exportTag);
 
   const runExport = async () => {
@@ -94,12 +97,12 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
         }
         result = await service.exportSingle({
           name: exportFileName(activeGlyph.codepoint),
-          content: glyphToSvg(activeGlyph, DEFAULT_METRICS, { scalePct, style, mergeHalftones, silhouette }),
+          content: glyphToSvg(activeGlyph, DEFAULT_METRICS, { scalePct, style, mergeHalftones, silhouette, tightCrop }),
         });
       } else {
         const files = glyphs.map((g) => ({
           name: exportFileName(g.codepoint),
-          content: glyphToSvg(g, DEFAULT_METRICS, { scalePct, style, mergeHalftones, silhouette }),
+          content: glyphToSvg(g, DEFAULT_METRICS, { scalePct, style, mergeHalftones, silhouette, tightCrop }),
         }));
         result = await service.exportGlyphs(files, {
           archiveName: resolveArchiveName(archiveName, exportTag),
@@ -195,6 +198,13 @@ export function ExportModal({ open, onClose }: ExportModalProps) {
         <p className="export-modal-sub">
           Flattens every glyph to solid black (counters/holes preserved) — ignores fill colours,
           gradients, and opacity. Ideal for FontForge import.
+        </p>
+
+        <Toggle label="Crop to artwork — no em frame" checked={tightCrop} onChange={setTightCrop} />
+        <p className="export-modal-sub">
+          Frames each SVG to its own drawing instead of the em square, so there is no empty margin
+          around the glyph. Baselines, sidebearings and advance width are then <em>not</em> shared
+          across glyphs — good for artwork, not for FontForge import.
         </p>
 
         <div className="export-scope" role="group" aria-label="Synthetic style">

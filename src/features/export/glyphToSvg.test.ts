@@ -67,6 +67,59 @@ describe("glyphToSvg", () => {
     expect(svg).toContain('viewBox="-100 -900 1000 1300"');
   });
 
+  it("tightCrop frames the artwork alone, dropping the em box", () => {
+    // BIG spans 100..500 x 100..700 and sits INSIDE the em box, so the default frame
+    // is the em box; cropping tight hugs the polygon instead (Y-flip: minY = -maxY).
+    const g = glyph([layer("LA", [BIG])]);
+    expect(glyphToSvg(g, DEFAULT_METRICS)).toContain('viewBox="0 -800 600 1000"');
+    expect(glyphToSvg(g, DEFAULT_METRICS, { tightCrop: true })).toContain(
+      'viewBox="100 -700 400 600"',
+    );
+  });
+
+  it("tightCrop scales with the universal scale %", () => {
+    const svg = glyphToSvg(glyph([layer("LA", [BIG])]), DEFAULT_METRICS, {
+      tightCrop: true,
+      scalePct: 50,
+    });
+    expect(svg).toContain('viewBox="50 -350 200 300"');
+  });
+
+  it("tightCrop falls back to the em box when the glyph is empty", () => {
+    // No artwork = no box to crop to; a 0-size viewBox would render as nothing.
+    const svg = glyphToSvg(glyph([layer("LA", [])]), DEFAULT_METRICS, { tightCrop: true });
+    expect(svg).toContain('viewBox="0 -800 600 1000"');
+  });
+
+  it("tightCrop keeps a flat span visible instead of a 0-height frame", () => {
+    // A degenerate (collinear) filled path has zero height; a 0 in width/height would
+    // render as nothing at all, so the frame keeps one unit on that axis.
+    const flat = poly("flat", [[100, 300], [400, 300], [250, 300]]);
+    const svg = glyphToSvg(glyph([layer("LA", [flat])]), DEFAULT_METRICS, { tightCrop: true });
+    expect(svg).toContain('viewBox="100 -300 300 1"');
+  });
+
+  it("a corrupt coordinate can't poison the viewBox", () => {
+    // A BAKED layer renders verbatim (Invariant 4) — no Paper pass launders a bad
+    // coordinate out — so the frame math must survive it on its own. A NaN in the
+    // viewBox makes the WHOLE file render as nothing, not just the bad path.
+    const bad = poly("bad", [[NaN, 0], [100, 0], [100, 100]]);
+    const g = glyph([{ ...layer("LA", [bad, BIG]), baked: true }]);
+    for (const svg of [glyphToSvg(g, DEFAULT_METRICS), glyphToSvg(g, DEFAULT_METRICS, { tightCrop: true })]) {
+      const vb = svg.match(/viewBox="([^"]+)"/)![1]!;
+      expect(vb).not.toContain("NaN");
+      expect(vb.split(" ").every((v) => Number.isFinite(Number(v)))).toBe(true);
+    }
+  });
+
+  it("tightCrop leaves the artwork itself untouched (frame-only switch)", () => {
+    const g = glyph([layer("LA", [BIG])]);
+    const paths = (svg: string) => svg.match(/<path [^>]*>/g);
+    expect(paths(glyphToSvg(g, DEFAULT_METRICS, { tightCrop: true }))).toEqual(
+      paths(glyphToSvg(g, DEFAULT_METRICS)),
+    );
+  });
+
   it("scales the frame uniformly with the artwork", () => {
     const svg = glyphToSvg(glyph([layer("LA", [BIG])]), DEFAULT_METRICS, { scalePct: 50 });
     expect(svg).toContain('viewBox="0 -400 300 500"');

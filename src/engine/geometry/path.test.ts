@@ -4,6 +4,7 @@ import {
   contourToPath,
   contourWinding,
   cubicAt,
+  cubicBounds,
   ensureWinding,
   reverseContour,
   signedArea,
@@ -121,5 +122,37 @@ describe("splitCubic", () => {
       expect(left[3].x).toBeCloseTo(onCurve.x, 9);
       expect(left[3].y).toBeCloseTo(onCurve.y, 9);
     }
+  });
+});
+
+describe("cubicBounds", () => {
+  it("bounds the CURVE, not the control-point box", () => {
+    // Handles reach y=30 but the curve only reaches y=22.5 (its t=0.5 apex).
+    const b = cubicBounds({ x: 0, y: 0 }, { x: 0, y: 30 }, { x: 10, y: 30 }, { x: 10, y: 0 });
+    expect(b.minX).toBeCloseTo(0, 9);
+    expect(b.maxX).toBeCloseTo(10, 9);
+    expect(b.minY).toBeCloseTo(0, 9);
+    expect(b.maxY).toBeCloseTo(22.5, 9);
+    expect(cubicAt({ x: 0, y: 0 }, { x: 0, y: 30 }, { x: 10, y: 30 }, { x: 10, y: 0 }, 0.5).y)
+      .toBeCloseTo(22.5, 9);
+  });
+
+  it("includes an extremum that lies outside the endpoints", () => {
+    // Both endpoints at y=0, handles pull the curve DOWN — the box must follow.
+    const b = cubicBounds({ x: 0, y: 0 }, { x: 0, y: -40 }, { x: 10, y: -40 }, { x: 10, y: 0 });
+    expect(b.maxY).toBeCloseTo(0, 9);
+    expect(b.minY).toBeCloseTo(-30, 9);
+  });
+
+  it("degenerates to the endpoints for a straight segment", () => {
+    // Collapsed handles (the 'no handle' case the contour walker passes in).
+    const a = { x: 3, y: 7 };
+    const d = { x: -5, y: 2 };
+    expect(cubicBounds(a, a, d, d)).toEqual({ minX: -5, minY: 2, maxX: 3, maxY: 7 });
+  });
+
+  it("is monotone-safe: a curve with no interior extremum keeps the endpoint box", () => {
+    const b = cubicBounds({ x: 0, y: 0 }, { x: 3, y: 3 }, { x: 7, y: 7 }, { x: 10, y: 10 });
+    expect(b).toEqual({ minX: 0, minY: 0, maxX: 10, maxY: 10 });
   });
 });

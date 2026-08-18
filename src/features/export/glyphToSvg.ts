@@ -3,6 +3,7 @@ import type { FontMetrics } from "../../constants/metrics";
 import { glyphFillGroups, type FillGroup, type RenderOptions } from "../canvas/layerFills";
 import { linearGradientSpec } from "../canvas/fillPaint";
 import { contoursToPath } from "../../engine/geometry/path";
+import { contourTightBounds, type BBox } from "../../engine/geometry/align";
 import { getGeometryService } from "../../engine/geometry/geometryEngine";
 import {
   type StyleTransform,
@@ -31,6 +32,12 @@ import {
  * clipped. The universal `scalePct` scales everything uniformly (frame and
  * artwork together), so the output is just the canvas at a chosen size.
  *
+ * `tightCrop` opts out of the metric frame entirely: the viewBox hugs the ink
+ * (exact curve bounds, not the handle box), so a small glyph doesn't ship inside
+ * a large empty frame. That is for artwork use — cropping each glyph to its own
+ * drawing deliberately gives up the shared baseline/sidebearings a font import
+ * needs, so the default stays the framed union.
+ *
  * Winding is deliberately NOT re-normalized here: `buildFillGroups` already
  * forces solid layers all-CW (solid under nonzero, no spurious hole) and the
  * geometry service hands back CW-outer / CCW-hole for boolean results — that is
@@ -47,6 +54,9 @@ export interface GlyphSvgOptions extends RenderOptions {
   style?: StyleTransform;
   /** Flat solid black, no colour/gradient/opacity — holes preserved. FontForge-ready. */
   silhouette?: boolean;
+  /** Frame the viewBox to the artwork alone, dropping the em box (see the note above).
+   *  Affects ONLY the frame — never the fill groups, so the render cache is untouched. */
+  tightCrop?: boolean;
 }
 
 export function glyphToSvg(
@@ -54,7 +64,7 @@ export function glyphToSvg(
   metrics: FontMetrics,
   opts: GlyphSvgOptions = {},
 ): string {
-  const { scalePct = 100, style, silhouette = false } = opts;
+  const { scalePct = 100, style, silhouette = false, tightCrop = false } = opts;
   const geom = getGeometryService();
 
   // Synthetic Bold/Italic (export-only). Build the fills UPRIGHT, then transform the
@@ -74,16 +84,23 @@ export function glyphToSvg(
 
   const s = scalePct / 100;
 
-  // World-space bounds: the em box (advance scaled by the stretch) unioned with the
-  // actual — now sheared — artwork, so the frame keeps metric context yet never crops.
+  // World-space bounds. Default: the em box (advance scaled by the stretch) unioned
+  // with the actual — now sheared — artwork, so the frame keeps metric context yet
+  // never crops. With tightCrop: the artwork alone, falling back to the em box when
+  // the glyph is empty (there is no box to crop to, and a 0-size viewBox is invalid).
   const framed = advScale === 1 ? glyph : { ...glyph, advanceWidth: glyph.advanceWidth * advScale };
-  const bounds = unionBounds(emBounds(framed, metrics), artworkBounds(groups));
+  const art = artworkBounds(groups);
+  const bounds = tightCrop
+    ? art ?? emBounds(framed, metrics)
+    : unionBounds(emBounds(framed, metrics), art);
 
   // World → SVG: (x, y) → (s·x, −s·y). Frame the viewBox to the transformed box.
+  // A flat span (a horizontal line cropped tight) would emit width/height 0, which
+  // renders as nothing — keep at least one unit on each axis.
   const vbX = s * bounds.minX;
   const vbY = -s * bounds.maxY;
-  const vbW = s * (bounds.maxX - bounds.minX);
-  const vbH = s * (bounds.maxY - bounds.minY);
+  const vbW = s * Math.max(bounds.maxX - bounds.minX, 1);
+  const vbH = s * Math.max(bounds.maxY - bounds.minY, 1);
 
   // A gradient group emits a `<linearGradient>` in <defs> (the SAME pure spec the
   // canvas/preview use) and fills via url(#id); FontForge ignores it and flattens to
@@ -131,15 +148,8 @@ export function glyphToSvg(
   );
 }
 
-interface Bounds {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-}
-
 /** The em box in world units (Y-up): [0, advanceWidth] × [-descender, ascender]. */
-function emBounds(glyph: Glyph, metrics: FontMetrics): Bounds {
+function emBounds(glyph: Glyph, metrics: FontMetrics): BBox {
   return {
     minX: 0,
     minY: -metrics.descender,
@@ -149,33 +159,28 @@ function emBounds(glyph: Glyph, metrics: FontMetrics): Bounds {
 }
 
 /**
- * World-space bounds of the rendered artwork. Anchor points AND their bezier
- * handles are included: a curve never leaves the box spanned by its control
- * points, so this is a safe (slightly generous) superset that guarantees no
- * clipping. Returns null when there is no geometry.
+ * World-space bounds of the rendered artwork, measured on the curves themselves
+ * (`contourTightBounds`) rather than on the control handles — the framed default
+ * only needs "no clipping", but the tight crop would show every unit of slack.
+ * Returns null when there is no geometry.
  */
-function artworkBounds(groups: FillGroup[]): Bounds | null {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
+function artworkBounds(groups: FillGroup[]): BBox | null {
+  let box: BBox | null = null;
   for (const g of groups) {
     for (const c of g.contours) {
-      for (const p of c.points) {
-        for (const pt of [p, p.handleIn, p.handleOut]) {
-          if (!pt) continue;
-          if (pt.x < minX) minX = pt.x;
-          if (pt.x > maxX) maxX = pt.x;
-          if (pt.y < minY) minY = pt.y;
-          if (pt.y > maxY) maxY = pt.y;
-        }
-      }
+      box = growBounds(box, contourTightBounds(c));
     }
   }
-  return maxX >= minX ? { minX, minY, maxX, maxY } : null;
+  return box;
 }
 
-function unionBounds(a: Bounds, b: Bounds | null): Bounds {
+/** Union that tolerates a null on EITHER side (the accumulator starts empty). */
+function growBounds(a: BBox | null, b: BBox | null): BBox | null {
+  if (!a) return b;
+  return unionBounds(a, b);
+}
+
+function unionBounds(a: BBox, b: BBox | null): BBox {
   if (!b) return a;
   return {
     minX: Math.min(a.minX, b.minX),
