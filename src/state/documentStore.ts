@@ -1249,10 +1249,13 @@ export const useDocumentStore = create<DocumentState>()(
           const s = get();
           if (!s.activeGlyphId || aLayerId === bLayerId) return;
           const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph || !findLayer(glyph, aLayerId) || !findLayer(glyph, bLayerId)) {
-            return;
-          }
-          // Exclusivity: drop any existing pair that references either layer,
+          if (!glyph) return;
+          // An operand is a layer OR a whole group (a group renders as one synthetic
+          // layer whose id is the group's, so `buildFillGroups` resolves it the same way).
+          const isOperand = (id: string): boolean => !!findLayer(glyph, id) || !!findGroup(glyph, id);
+          if (!isOperand(aLayerId) || !isOperand(bLayerId)) return;
+
+          // Exclusivity: drop any existing pair that references either operand,
           // then add the new one.
           const kept = (glyph.booleanPairs ?? []).filter(
             (p) => !p.layerIds.includes(aLayerId) && !p.layerIds.includes(bLayerId),
@@ -1263,10 +1266,28 @@ export const useDocumentStore = create<DocumentState>()(
             op,
             ...(op === "blend" && steps != null ? { steps } : {}),
           };
+          // Pairing a group MEANS treating it as one shape, so make sure it actually
+          // renders that way. Without this the group would still emit its members
+          // individually, none of them matching the pair's id — and `buildFillGroups`
+          // (which only resolves pairs whose BOTH members are present) would silently
+          // drop the boolean, leaving the user with an op that appears to do nothing.
+          const operandGroups = new Set(
+            [aLayerId, bLayerId].filter((id) => findGroup(glyph, id)),
+          );
+          const layerGroups = operandGroups.size
+            ? (glyph.layerGroups ?? []).map((g) =>
+                operandGroups.has(g.id) && !g.renderAsOne ? { ...g, renderAsOne: true } : g,
+              )
+            : glyph.layerGroups;
+
           set({
             glyphs: {
               ...s.glyphs,
-              [glyph.id]: { ...glyph, booleanPairs: [...kept, pair] },
+              [glyph.id]: {
+                ...glyph,
+                booleanPairs: [...kept, pair],
+                ...(layerGroups ? { layerGroups } : {}),
+              },
             },
           });
         },
@@ -1429,12 +1450,18 @@ export const useDocumentStore = create<DocumentState>()(
               else delete next.parentId;
               return next;
             });
-          set({
-            glyphs: {
-              ...s.glyphs,
-              [glyph.id]: withGroups({ ...glyph, layers }, layerGroups),
-            },
-          });
+          // A pair naming the dissolved group would dangle — the group no longer
+          // renders as a single layer, so the op could never resolve.
+          const next = withGroups({ ...glyph, layers }, layerGroups);
+          const pairs = (next.booleanPairs ?? []).filter((p) => !p.layerIds.includes(groupId));
+          const cleaned: Glyph = pairs.length
+            ? { ...next, booleanPairs: pairs }
+            : (() => {
+                const o = { ...next };
+                delete o.booleanPairs;
+                return o;
+              })();
+          set({ glyphs: { ...s.glyphs, [glyph.id]: cleaned } });
         },
 
         renameGroup: (groupId, name) =>

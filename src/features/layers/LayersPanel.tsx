@@ -19,7 +19,7 @@ import {
 } from "../../components/menu";
 import { LayerRow, OP_LABEL, OP_SYMBOL, pairColor } from "./LayerRow";
 import { GroupRow } from "./GroupRow";
-import { groupMembers, visibleRows } from "./layerTree";
+import { groupMembers, selectionUnits, visibleRows, type SelectionUnit } from "./layerTree";
 import { mergeLayers } from "./mergeLayers";
 import { layerColorMap } from "./layerColors";
 import { useEditorStore } from "../../state/editorStore";
@@ -140,23 +140,24 @@ export function LayersPanel() {
     },
   ];
 
-  // Pathfinder operands: exactly two selected layers, ordered upper (A) / lower (B).
-  let operands: { upper: string; lower: string; upperName: string; lowerName: string } | null =
-    null;
-  if (selectedLayerIds.length === 2) {
-    const [x, y] = selectedLayerIds;
-    const ix = indexById.get(x!) ?? -1;
-    const iy = indexById.get(y!) ?? -1;
-    if (ix >= 0 && iy >= 0) {
-      const upper = ix > iy ? x! : y!;
-      const lower = ix > iy ? y! : x!;
-      operands = {
-        upper,
-        lower,
-        upperName: layers[indexById.get(upper)!]!.name,
-        lowerName: layers[indexById.get(lower)!]!.name,
-      };
-    }
+  // Pathfinder operands: exactly two selected UNITS, ordered upper (A) / lower (B).
+  // A unit is a layer or a whole group, so selecting a folder (which selects all its
+  // members) counts as ONE operand rather than N.
+  const units = selectionUnits(glyph, selectedLayerIds);
+  let operands:
+    | { upper: string; lower: string; upperName: string; lowerName: string; hasGroup: boolean }
+    | null = null;
+  if (units.length === 2) {
+    const [x, y] = units as [SelectionUnit, SelectionUnit];
+    const hi = x.at > y.at ? x : y;
+    const lo = x.at > y.at ? y : x;
+    operands = {
+      upper: hi.id,
+      lower: lo.id,
+      upperName: hi.name,
+      lowerName: lo.name,
+      hasGroup: x.isGroup || y.isGroup,
+    };
   }
   // If these two operands are already a Blend pair, surface its step count for editing.
   const activePair = operands ? pairForLayer(pairs, operands.upper) : undefined;
@@ -203,10 +204,17 @@ export function LayersPanel() {
                 key={op}
                 type="button"
                 className="pathfinder-op"
+                // Blend morphs the RAW contours, but a group operand is already baked
+                // to its rendered outline — the morph would silently lose handles and
+                // the stroke-width interpolation. Better to disable it than to ship a
+                // degraded result that looks like a bug.
+                disabled={op === "blend" && operands!.hasGroup}
                 title={
-                  op === "blend"
-                    ? "Blend (A → B shape morph / echo)"
-                    : `${OP_LABEL[op]} (A ${OP_SYMBOL[op]} B)`
+                  op === "blend" && operands!.hasGroup
+                    ? "Blend doesn't support groups — pair two plain layers"
+                    : op === "blend"
+                      ? "Blend (A → B shape morph / echo)"
+                      : `${OP_LABEL[op]} (A ${OP_SYMBOL[op]} B)`
                 }
                 onClick={() =>
                   doc().setBooleanPair(

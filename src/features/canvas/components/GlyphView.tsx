@@ -2,6 +2,7 @@ import { memo, useMemo } from "react";
 import { contourToPath, contoursToPath } from "../../../engine/geometry/path";
 import { getGeometryService } from "../../../engine/geometry/geometryEngine";
 import { buildGlyphFills } from "../layerFills";
+import { memberLayerIds } from "../../layers/layerTree";
 import { linearGradientSpec, gradientId } from "../fillPaint";
 import { useVisibleRenderLayers } from "../useGlyphContours";
 import { useBooleanPairs, useLayerGroups } from "../../../state/documentStore";
@@ -52,14 +53,22 @@ export const GlyphView = memo(function GlyphView() {
     [layers, groups, pairs, showFills, mergeHalftones],
   );
 
+  // Layers whose outline is dashed because they take part in a boolean pair. An
+  // operand can be a GROUP, so expand it to its member layers — otherwise a paired
+  // folder would show no operand cue at all on the canvas.
   const pairedLayerIds = useMemo(() => {
     const set = new Set<string>();
+    const add = (id: string): void => {
+      set.add(id);
+      const g = groups.find((x) => x.id === id);
+      if (g) for (const m of memberLayerIds(groups, layers, id)) set.add(m);
+    };
     for (const p of pairs) {
-      set.add(p.layerIds[0]);
-      set.add(p.layerIds[1]);
+      add(p.layerIds[0]);
+      add(p.layerIds[1]);
     }
     return set;
-  }, [pairs]);
+  }, [pairs, groups, layers]);
 
   if (layers.length === 0) return null;
 

@@ -252,3 +252,56 @@ describe("hidden groups still win over render-as-one", () => {
     expect(groups[0]!.id).toBe("b");
   });
 });
+
+describe("a group as a Pathfinder operand (stage 5)", () => {
+  /** Two 100-squares inside g1 (bottom), one big square on top. */
+  const paired = () =>
+    gl(
+      [lay("a", 0, "g1"), lay("b", 40, "g1"), lay("big", 20)],
+      [grp("g1", { renderAsOne: true })],
+    );
+
+  it("resolves a pair whose operand is a GROUP id", () => {
+    const g = paired();
+    g.booleanPairs = [{ id: "bp1", layerIds: ["big", "g1"], op: "subtract" }];
+    const groups = glyphFillGroups(g, geom());
+    // One combined region, not the two operands painted separately.
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.id).toBe("bp1");
+  });
+
+  it("a group operand really is treated as ONE shape", () => {
+    // Subtracting the group must remove BOTH its members' area, not just one.
+    const withGroup = paired();
+    withGroup.booleanPairs = [{ id: "bp1", layerIds: ["big", "g1"], op: "subtract" }];
+    const onlyOne = gl([lay("a", 0), lay("big", 20)]);
+    onlyOne.booleanPairs = [{ id: "bp1", layerIds: ["big", "a"], op: "subtract" }];
+
+    const areaish = (x: Glyph) =>
+      glyphFillGroups(x, geom()).flatMap((q) => q.contours).length;
+    // Different geometry: subtracting two squares leaves a different result than one.
+    expect(areaish(withGroup)).not.toBe(0);
+    expect(glyphToSvg(withGroup, DEFAULT_METRICS)).not.toBe(
+      glyphToSvg(onlyOne, DEFAULT_METRICS),
+    );
+  });
+
+  it("falls back to painting both when the group is hidden", () => {
+    // A hidden operand drops out of the layer list, so the pair can't resolve — the
+    // visible operand must still paint rather than vanishing.
+    const g = paired();
+    g.layerGroups = [grp("g1", { renderAsOne: true, visible: false })];
+    g.booleanPairs = [{ id: "bp1", layerIds: ["big", "g1"], op: "subtract" }];
+    const groups = glyphFillGroups(g, geom());
+    expect(groups.map((x) => x.id)).toEqual(["big"]);
+  });
+
+  it("a pair naming a group that does NOT render as one cannot resolve", () => {
+    // Documents the invariant setBooleanPair maintains by auto-enabling renderAsOne.
+    const g = paired();
+    g.layerGroups = [grp("g1")]; // renderAsOne off
+    g.booleanPairs = [{ id: "bp1", layerIds: ["big", "g1"], op: "subtract" }];
+    const groups = glyphFillGroups(g, geom());
+    expect(groups.map((x) => x.id)).toEqual(["a", "b", "big"]); // all painted normally
+  });
+});

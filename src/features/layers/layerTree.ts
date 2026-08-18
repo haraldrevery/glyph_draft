@@ -199,6 +199,83 @@ export function visibleRows(glyph: Glyph): TreeRow[] {
 }
 
 /**
+ * Layer ids inside `groupId` (recursively), computed from a FLAT group list plus any
+ * objects carrying a `groupId` — for callers that hold the pieces rather than a whole
+ * `Glyph` (the canvas renderer works on projected layers, not the document).
+ * Cycle-safe. `groupMembers` is the Glyph-shaped equivalent.
+ */
+export function memberLayerIds(
+  groups: LayerGroup[],
+  layers: readonly { id: string; groupId?: string }[],
+  groupId: string,
+): string[] {
+  const ids = new Set<string>([groupId]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const g of groups) {
+      if (g.parentId && ids.has(g.parentId) && !ids.has(g.id)) {
+        ids.add(g.id);
+        grew = true;
+      }
+    }
+  }
+  return layers.filter((l) => l.groupId && ids.has(l.groupId)).map((l) => l.id);
+}
+
+/** A Pathfinder operand: either a plain layer or a whole group. */
+export interface SelectionUnit {
+  id: string;
+  name: string;
+  isGroup: boolean;
+  /** Position in the flat layers array — the lowest member for a group. Drives the
+   *  upper(A)/lower(B) ordering, matching how the flattened render array is built. */
+  at: number;
+}
+
+/**
+ * Collapse a layer selection into UNITS: any group entirely inside the selection
+ * becomes one unit, and everything else stays a layer.
+ *
+ * This is what lets a group act as a single Pathfinder operand — selecting a folder
+ * selects all its members, which would otherwise read as N operands instead of one.
+ * Uses the same "topmost fully-contained ancestor" rule as `documentStore.groupLayers`,
+ * so grouping and pairing agree about what the user picked.
+ */
+export function selectionUnits(glyph: Glyph, layerIds: string[]): SelectionUnit[] {
+  const selected = new Set(layerIds);
+  const contained = (gid: string): boolean => {
+    const ms = groupMembers(glyph, gid);
+    return ms.length > 0 && ms.every((l) => selected.has(l.id));
+  };
+  const unitFor = (gid: string | undefined): string | null => {
+    let best: string | null = null;
+    for (const id of gid ? [gid, ...ancestors(glyph, gid).map((a) => a.id)] : []) {
+      if (!contained(id)) break;
+      best = id;
+    }
+    return best;
+  };
+
+  const seen = new Set<string>();
+  const out: SelectionUnit[] = [];
+  glyph.layers.forEach((l, at) => {
+    if (!selected.has(l.id)) return;
+    const unit = unitFor(l.groupId);
+    if (unit) {
+      if (seen.has(unit)) return;
+      seen.add(unit);
+      out.push({ id: unit, name: findGroup(glyph, unit)?.name ?? unit, isGroup: true, at });
+    } else {
+      if (seen.has(l.id)) return;
+      seen.add(l.id);
+      out.push({ id: l.id, name: l.name, isGroup: false, at });
+    }
+  });
+  return out;
+}
+
+/**
  * The glyph's layers with GROUP INHERITANCE folded into `visible` / `locked`.
  *
  * This is how group visibility/lock reaches the ~20 call sites that already filter on

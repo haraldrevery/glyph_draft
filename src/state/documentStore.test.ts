@@ -837,6 +837,50 @@ describe("layer groups", () => {
     });
   });
 
+  describe("a group as a Pathfinder operand (stage 5)", () => {
+    it("accepts a group id as an operand", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      state().setBooleanPair("c", gid, "subtract");
+      const pair = g().booleanPairs![0]!;
+      expect(pair.layerIds).toContain(gid);
+      expect(pair.op).toBe("subtract");
+    });
+
+    it("auto-enables renderAsOne on a paired group", () => {
+      // Otherwise the group would still emit its members individually, none matching
+      // the pair id, and buildFillGroups would silently drop the boolean.
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      state().setGroupRenderAsOne(gid, false);
+      state().setBooleanPair("c", gid, "union");
+      expect(findGroup(g(), gid)?.renderAsOne).toBe(true);
+    });
+
+    it("ungrouping drops a pair that named the group", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      state().setBooleanPair("c", gid, "subtract");
+      expect(g().booleanPairs).toHaveLength(1);
+      state().ungroupGroup(gid);
+      expect(g().booleanPairs ?? []).toHaveLength(0);
+    });
+
+    it("deleting a group's last layer drops its pair too", () => {
+      seedLayers(["a", "b"]);
+      const gid = state().groupLayers(["a"])!;
+      state().setBooleanPair("b", gid, "union");
+      state().deleteLayer("a");
+      expect(g().booleanPairs ?? []).toHaveLength(0);
+    });
+
+    it("refuses an id that is neither a layer nor a group", () => {
+      seedLayers(["a", "b"]);
+      state().setBooleanPair("a", "nonsense", "union");
+      expect(g().booleanPairs ?? []).toHaveLength(0);
+    });
+  });
+
   describe("contiguity is preserved by inserts", () => {
     it("addLayer joins the active layer's group", () => {
       seedLayers(["a", "b", "c"]);
