@@ -746,6 +746,97 @@ describe("layer groups", () => {
     expect(findGroup(g(), gid)?.name).toBe("Keep");
   });
 
+  describe("grouping groups (regression)", () => {
+    // Reported: "can't group two groups". The first implementation re-tagged every
+    // selected LAYER, which silently dissolved both source groups into one flat
+    // folder. Grouping must nest whole groups instead.
+    it("nests two whole groups instead of dissolving them", () => {
+      seedLayers(["a", "b", "c", "d"]);
+      const g1 = state().groupLayers(["a", "b"])!;
+      const g2 = state().groupLayers(["c", "d"])!;
+      const outer = state().groupLayers(["a", "b", "c", "d"])!;
+
+      expect(findGroup(g(), g1)?.parentId).toBe(outer);
+      expect(findGroup(g(), g2)?.parentId).toBe(outer);
+      expect(groupOf("a")).toBe(g1); // still in its original inner group
+      expect(groupOf("c")).toBe(g2);
+      expect(groupMembers(g(), outer).map((l) => l.id)).toEqual(["a", "b", "c", "d"]);
+    });
+
+    it("wraps a single whole group", () => {
+      seedLayers(["a", "b"]);
+      const inner = state().groupLayers(["a"])!;
+      const outer = state().groupLayers(["a"])!;
+      expect(findGroup(g(), inner)?.parentId).toBe(outer);
+      expect(groupOf("a")).toBe(inner); // untouched
+    });
+
+    it("mixes a whole group with a loose layer", () => {
+      seedLayers(["a", "b", "c"]);
+      const g1 = state().groupLayers(["a", "b"])!;
+      const outer = state().groupLayers(["a", "b", "c"])!;
+      expect(findGroup(g(), g1)?.parentId).toBe(outer);
+      expect(groupOf("c")).toBe(outer); // the loose layer joins directly
+      expect(groupOf("a")).toBe(g1);
+    });
+
+    it("a PARTIAL group selection still makes a subgroup (not a wrap)", () => {
+      seedLayers(["a", "b", "c"]);
+      const g1 = state().groupLayers(["a", "b", "c"])!;
+      const sub = state().groupLayers(["a", "b"])!; // only part of g1
+      expect(findGroup(g(), sub)?.parentId).toBe(g1);
+      expect(groupOf("a")).toBe(sub);
+      expect(groupOf("c")).toBe(g1);
+    });
+  });
+
+  describe("activeGroupId (regression)", () => {
+    // Reported: "can't move a group around". The panel's reorder buttons acted on the
+    // active LAYER, so clicking a folder and pressing move reordered one member out of
+    // it. The panel now dispatches on activeGroupId.
+    it("clicking a group row targets the group", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      state().selectGroup(gid);
+      expect(state().activeGroupId).toBe(gid);
+      expect(state().selectedLayerIds).toEqual(["a", "b"]);
+    });
+
+    it("clicking a plain layer clears the group target", () => {
+      seedLayers(["a", "b"]);
+      const gid = state().groupLayers(["a"])!;
+      state().selectGroup(gid);
+      state().setActiveLayer("b");
+      expect(state().activeGroupId).toBeNull();
+    });
+
+    it("Ctrl+clicking a layer clears it too", () => {
+      seedLayers(["a", "b"]);
+      const gid = state().groupLayers(["a"])!;
+      state().selectGroup(gid);
+      state().toggleLayerSelection("b");
+      expect(state().activeGroupId).toBeNull();
+    });
+
+    it("moving via the group target keeps the folder intact", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      state().selectGroup(gid);
+      state().moveGroup(state().activeGroupId!, "up");
+      expect(order()).toEqual(["c", "a", "b"]);
+      expect(groupMembers(g(), gid).map((l) => l.id)).toEqual(["a", "b"]);
+    });
+
+    it("reconcileActive drops a pointer to a group that vanished", () => {
+      seedLayers(["a", "b"]);
+      const gid = state().groupLayers(["a"])!;
+      state().selectGroup(gid);
+      state().ungroupGroup(gid);
+      state().reconcileActive();
+      expect(state().activeGroupId).toBeNull();
+    });
+  });
+
   describe("contiguity is preserved by inserts", () => {
     it("addLayer joins the active layer's group", () => {
       seedLayers(["a", "b", "c"]);
@@ -793,13 +884,15 @@ describe("layer groups", () => {
       expect(g().layerGroups).toBeUndefined();
     });
 
-    it("emptying an inner group prunes its now-empty parent too", () => {
+    it("emptying an inner group prunes its now-empty ancestors too", () => {
       seedLayers(["a", "b"]);
-      const outer = state().groupLayers(["a"])!;
       const inner = state().groupLayers(["a"])!;
+      // Grouping a selection that covers all of `inner` WRAPS it (see the
+      // group-of-groups tests) — so `outer` becomes inner's parent, two deep.
+      const outer = state().groupLayers(["a"])!;
       expect(findGroup(g(), inner)?.parentId).toBe(outer);
       state().deleteLayer("a");
-      expect(g().layerGroups).toBeUndefined();
+      expect(g().layerGroups).toBeUndefined(); // the whole chain is pruned
     });
 
     it("keeps a group that still holds a layer", () => {

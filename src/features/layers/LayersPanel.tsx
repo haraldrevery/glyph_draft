@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
   useActiveGlyph,
+  useActiveGroupId,
   useActiveLayerId,
   useSelectedLayerIds,
   useBooleanPairs,
@@ -43,6 +44,7 @@ const MAX_BLEND_STEPS_UI = 32;
 export function LayersPanel() {
   const glyph = useActiveGlyph();
   const activeLayerId = useActiveLayerId();
+  const activeGroupId = useActiveGroupId();
   const selectedLayerIds = useSelectedLayerIds();
   const pairs = useBooleanPairs();
   // Layers that own a selected NODE (a node selection can span layers) — tinted subtly so
@@ -103,6 +105,14 @@ export function LayersPanel() {
       disabled: !canDelete,
     },
   ];
+
+  // The reorder buttons act on whatever the user last clicked: a folder row moves the
+  // WHOLE group, a layer row moves just that layer. Without this, clicking a group and
+  // pressing move would silently reorder one member out of the folder.
+  const moveTarget = (direction: "up" | "down"): void => {
+    if (activeGroupId) doc().moveGroup(activeGroupId, direction);
+    else if (activeLayerId) doc().moveLayer(activeLayerId, direction);
+  };
 
   // Group-targeted right-click actions.
   const groupMenuItems = (grp: LayerGroup): ContextMenuItem[] => [
@@ -247,7 +257,7 @@ export function LayersPanel() {
                 key={grp.id}
                 group={grp}
                 depth={row.depth}
-                active={false}
+                active={grp.id === activeGroupId}
                 selected={allSelected}
                 onSelect={({ additive, range }) => {
                   if (range && memberIds[0]) doc().selectLayerRange(memberIds[0]);
@@ -340,7 +350,7 @@ export function LayersPanel() {
           className="icon-btn"
           title="Move up"
           disabled={atTop || activeIndex < 0}
-          onClick={() => activeLayerId && doc().moveLayer(activeLayerId, "up")}
+          onClick={() => moveTarget("up")}
         >
           <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
             <path d="M8 12V4M4.5 7.5L8 4l3.5 3.5" />
@@ -351,7 +361,7 @@ export function LayersPanel() {
           className="icon-btn"
           title="Move down"
           disabled={atBottom || activeIndex < 0}
-          onClick={() => activeLayerId && doc().moveLayer(activeLayerId, "down")}
+          onClick={() => moveTarget("down")}
         >
           <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
             <path d="M8 4v8M4.5 8.5L8 12l3.5-3.5" />

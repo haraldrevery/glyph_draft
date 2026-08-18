@@ -63,6 +63,10 @@ interface DocumentState {
    *  layer selects only it; Ctrl/Cmd+click toggles others in. Drives the
    *  layer-level Pathfinder and multi-layer operations. Not undoable. */
   selectedLayerIds: string[];
+  /** The GROUP row the user last clicked, or null when the target is a plain layer.
+   *  Lets the panel's move/duplicate/delete act on the whole folder instead of on
+   *  one member. Session state like `activeLayerId` — never undoable. */
+  activeGroupId: string | null;
 
   ensureActiveTarget: () => EditTarget;
   setActiveGlyph: (glyphId: string) => void;
@@ -313,7 +317,7 @@ function inheritGroupId(glyph: Glyph, activeLayerId: string | null): string | un
 
 function seed(): Pick<
   DocumentState,
-  "glyphs" | "activeGlyphId" | "activeLayerId" | "selectedLayerIds"
+  "glyphs" | "activeGlyphId" | "activeLayerId" | "selectedLayerIds" | "activeGroupId"
 > {
   const glyph = createDefaultGlyph(DEFAULT_METRICS);
   const layerId = glyph.layers[0]!.id;
@@ -322,6 +326,7 @@ function seed(): Pick<
     activeGlyphId: glyph.id,
     activeLayerId: layerId,
     selectedLayerIds: [layerId],
+    activeGroupId: null,
   };
 }
 
@@ -458,15 +463,21 @@ export const useDocumentStore = create<DocumentState>()(
           if (activeLayerId && !selectedLayerIds.includes(activeLayerId)) {
             selectedLayerIds = [activeLayerId];
           }
+          // A targeted group can vanish (undo, ungroup, prune) — drop the pointer.
+          const activeGroupId =
+            glyph && s.activeGroupId && findGroup(glyph, s.activeGroupId)
+              ? s.activeGroupId
+              : null;
           const selChanged =
             selectedLayerIds.length !== s.selectedLayerIds.length ||
             selectedLayerIds.some((id, i) => s.selectedLayerIds[i] !== id);
           if (
             activeGlyphId !== s.activeGlyphId ||
             activeLayerId !== s.activeLayerId ||
+            activeGroupId !== s.activeGroupId ||
             selChanged
           ) {
-            set({ activeGlyphId, activeLayerId, selectedLayerIds });
+            set({ activeGlyphId, activeLayerId, selectedLayerIds, activeGroupId });
           }
         },
 
@@ -1070,9 +1081,10 @@ export const useDocumentStore = create<DocumentState>()(
         setActiveLayer: (layerId) => {
           const s = get();
           const glyph = s.activeGlyphId ? s.glyphs[s.activeGlyphId] : null;
-          // Plain activation selects only this layer (single-select).
+          // Plain activation selects only this layer (single-select) and clears any
+          // group target, so the reorder buttons act on the layer again.
           if (glyph && findLayer(glyph, layerId)) {
-            set({ activeLayerId: layerId, selectedLayerIds: [layerId] });
+            set({ activeLayerId: layerId, selectedLayerIds: [layerId], activeGroupId: null });
           }
         },
 
@@ -1088,10 +1100,14 @@ export const useDocumentStore = create<DocumentState>()(
               s.activeLayerId === layerId
                 ? selectedLayerIds[selectedLayerIds.length - 1] ?? s.activeLayerId
                 : s.activeLayerId;
-            set({ selectedLayerIds, activeLayerId });
+            set({ selectedLayerIds, activeLayerId, activeGroupId: null });
           } else {
             // Add and make it active so edits target the just-clicked layer.
-            set({ selectedLayerIds: [...s.selectedLayerIds, layerId], activeLayerId: layerId });
+            set({
+              selectedLayerIds: [...s.selectedLayerIds, layerId],
+              activeLayerId: layerId,
+              activeGroupId: null,
+            });
           }
         },
 
@@ -1309,9 +1325,39 @@ export const useDocumentStore = create<DocumentState>()(
           const members = glyph.layers.filter((l) => wanted.has(l.id));
           if (members.length === 0) return null;
 
-          // Nest under the parent the members already share (grouping a subset of a
-          // group's layers makes a subgroup); mixed parents ⇒ a top-level group.
-          const parents = new Set(members.map((l) => l.groupId));
+          // What gets re-parented into the new group are UNITS, not raw layers: if a
+          // whole existing group is inside the selection, that GROUP is nested (kept
+          // intact) rather than having its layers re-tagged — otherwise grouping two
+          // groups would silently dissolve both into one flat folder.
+          const selected = new Set(members.map((l) => l.id));
+          const fullyContained = (gid: string): boolean => {
+            const ms = groupMembers(glyph, gid);
+            return ms.length > 0 && ms.every((l) => selected.has(l.id));
+          };
+          // The TOPMOST fully-contained ancestor. Containment is monotone going up (a
+          // child is a subset of its parent), so the last `true` in the chain wins.
+          const unitGroupFor = (gid: string | undefined): string | null => {
+            let best: string | null = null;
+            for (const id of gid ? [gid, ...ancestors(glyph, gid).map((a) => a.id)] : []) {
+              if (!fullyContained(id)) break;
+              best = id;
+            }
+            return best;
+          };
+
+          const unitGroups = new Set<string>();
+          const unitLayers = new Set<string>();
+          for (const l of members) {
+            const unit = unitGroupFor(l.groupId);
+            if (unit) unitGroups.add(unit);
+            else unitLayers.add(l.id);
+          }
+
+          // Nest under the parent every unit already shares; mixed ⇒ top level.
+          const parents = new Set<string | undefined>([
+            ...[...unitGroups].map((id) => findGroup(glyph, id)?.parentId),
+            ...[...unitLayers].map((id) => glyph.layers.find((l) => l.id === id)?.groupId),
+          ]);
           const parentId = parents.size === 1 ? [...parents][0] : undefined;
 
           const groupId = createId("grp");
@@ -1332,14 +1378,22 @@ export const useDocumentStore = create<DocumentState>()(
             if (memberIds.has(l.id)) top = i;
           });
           const below = glyph.layers.slice(0, top).filter((l) => !memberIds.has(l.id)).length;
-          const tagged = members.map((l) => ({ ...l, groupId }));
+          // Only layers that are NOT already covered by a nested unit group get re-tagged.
+          const tagged = members.map((l) =>
+            unitLayers.has(l.id) ? { ...l, groupId } : l,
+          );
           const layers = [...rest.slice(0, below), ...tagged, ...rest.slice(below)];
 
+          // Unit groups keep their own layers; only their parent pointer moves.
+          const layerGroups = [
+            ...(glyph.layerGroups ?? []).map((gr) =>
+              unitGroups.has(gr.id) ? { ...gr, parentId: groupId } : gr,
+            ),
+            group,
+          ];
+
           set({
-            glyphs: {
-              ...s.glyphs,
-              [glyph.id]: { ...glyph, layers, layerGroups: [...(glyph.layerGroups ?? []), group] },
-            },
+            glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers, layerGroups } },
           });
           return groupId;
         },
@@ -1414,8 +1468,9 @@ export const useDocumentStore = create<DocumentState>()(
           const selectedLayerIds = additive
             ? [...new Set([...s.selectedLayerIds, ...ids])]
             : ids;
-          // The lowest member becomes active, so new geometry lands inside the group.
-          set({ selectedLayerIds, activeLayerId: ids[0]! });
+          // The lowest member becomes active, so new geometry lands inside the group,
+          // and the group itself becomes the target for move/duplicate/delete.
+          set({ selectedLayerIds, activeLayerId: ids[0]!, activeGroupId: groupId });
         },
 
         moveGroup: (groupId, direction) => {
@@ -1542,6 +1597,11 @@ export function useGlyphList(): Glyph[] {
 
 export function useActiveLayerId(): string | null {
   return useDocumentStore((s) => s.activeLayerId);
+}
+
+/** The group row the user last clicked, or null when a plain layer is the target. */
+export function useActiveGroupId(): string | null {
+  return useDocumentStore((s) => s.activeGroupId);
 }
 
 /** Ids of the selected layers (always includes the active layer). */
