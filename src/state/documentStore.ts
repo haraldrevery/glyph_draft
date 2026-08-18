@@ -8,6 +8,7 @@ import { extractContours, joinContours, splitContourAt, splitContourAtPoints } f
 import { convertPoint } from "../engine/geometry/nodeHandles";
 import {
   ancestors,
+  descendantGroups,
   effectiveLocked,
   findGroup,
   groupMembers,
@@ -215,6 +216,20 @@ interface DocumentState {
   /** Select every layer in a group (Ctrl/Cmd+click adds to the current selection).
    *  The group's lowest member becomes active so new geometry lands inside it. */
   selectGroup: (groupId: string, additive?: boolean) => void;
+  /**
+   * Drag-and-drop move: put a layer OR group at a drop position relative to another
+   * row. `position` is in PANEL terms (top-down): "above"/"below" place the unit as a
+   * sibling of `targetId`, adopting its parent; "inside" drops it into a group.
+   *
+   * The single place drop semantics live, so the panel only has to report what the
+   * pointer did. Preserves the CONTIGUITY invariant by moving the unit's whole layer
+   * run as one block, and refuses moves that would create a cycle. One undo step.
+   */
+  moveUnitTo: (
+    dragId: string,
+    targetId: string,
+    position: "above" | "below" | "inside",
+  ) => void;
   /** Move a whole group past its adjacent SIBLING (same parent). A move that would
    *  cross a parent boundary is a no-op — re-parenting is a drag-and-drop concern. */
   moveGroup: (groupId: string, direction: "up" | "down") => void;
@@ -283,6 +298,13 @@ function pruneEmptyGroups(glyph: Glyph): Glyph {
     }
   }
   return out;
+}
+
+/** The current parent of a unit (a group's parentId, or a layer's groupId). */
+function newParentOf(glyph: Glyph, unitId: string): string | undefined {
+  const g = glyph.layerGroups?.find((x) => x.id === unitId);
+  if (g) return g.parentId;
+  return glyph.layers.find((l) => l.id === unitId)?.groupId;
 }
 
 /** "Group 1", "Group 2", … skipping names already taken. */
@@ -1539,6 +1561,97 @@ export const useDocumentStore = create<DocumentState>()(
           const layers =
             direction === "up" ? [...head, ...other, ...run, ...tail] : [...head, ...run, ...other, ...tail];
           set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
+        },
+
+        moveUnitTo: (dragId, targetId, position) => {
+          const s = get();
+          if (!s.activeGlyphId || dragId === targetId) return;
+          const glyph = s.glyphs[s.activeGlyphId];
+          if (!glyph) return;
+
+          // The dragged unit's contiguous layer run: a group's whole range, or the
+          // single layer. Moving it as one block is what keeps groups contiguous.
+          const dragGroup = findGroup(glyph, dragId);
+          let run: [number, number] | null;
+          if (dragGroup) {
+            run = groupRange(glyph, dragId);
+          } else {
+            const at = glyph.layers.findIndex((l) => l.id === dragId);
+            run = at >= 0 ? [at, at] : null;
+          }
+          if (!run) return;
+          const [lo, hi] = run;
+
+          // Refuse a move that would nest a group inside itself or its own descendant.
+          if (dragGroup) {
+            const inside = new Set([dragId, ...descendantGroups(glyph, dragId).map((g) => g.id)]);
+            const targetGroup = findGroup(glyph, targetId);
+            if (targetGroup && inside.has(targetId)) return;
+            const targetLayer = glyph.layers.find((l) => l.id === targetId);
+            if (targetLayer?.groupId && inside.has(targetLayer.groupId)) return;
+          }
+
+          // Where the block lands, and whose child it becomes.
+          let insertAt: number;
+          let newParent: string | undefined;
+          if (position === "inside") {
+            const g = findGroup(glyph, targetId);
+            if (!g) return; // only a group can be dropped INTO
+            const r = groupRange(glyph, targetId);
+            if (!r) return; // an empty group has no slot to drop into
+            insertAt = r[1] + 1; // top of the folder (panel top = high array index)
+            newParent = targetId;
+          } else {
+            const tGroup = findGroup(glyph, targetId);
+            const tRange = tGroup ? groupRange(glyph, targetId) : null;
+            const tAt = tGroup ? null : glyph.layers.findIndex((l) => l.id === targetId);
+            if (tGroup && !tRange) return;
+            if (!tGroup && (tAt == null || tAt < 0)) return;
+            const [tLo, tHi] = tGroup ? tRange! : [tAt!, tAt!];
+            // Panel is top-down while the array is bottom-to-top, so "above" is +1.
+            insertAt = position === "above" ? tHi + 1 : tLo;
+            newParent = tGroup ? tGroup.parentId : glyph.layers[tAt!]!.groupId;
+          }
+          // Dropping onto its own run is a no-op.
+          if (insertAt >= lo && insertAt <= hi + 1 && newParentOf(glyph, dragId) === newParent) {
+            return;
+          }
+
+          const block = glyph.layers.slice(lo, hi + 1);
+          const rest = [...glyph.layers.slice(0, lo), ...glyph.layers.slice(hi + 1)];
+          // Re-index the insertion point now that the block is gone.
+          const at = insertAt > hi ? insertAt - block.length : insertAt;
+
+          // Only the DRAGGED unit's own parent pointer changes; layers inside a dragged
+          // group keep pointing at it.
+          const retagged = dragGroup
+            ? block
+            : block.map((l) => {
+                const next = { ...l };
+                if (newParent) next.groupId = newParent;
+                else delete next.groupId;
+                return next;
+              });
+
+          const layers = [...rest.slice(0, at), ...retagged, ...rest.slice(at)];
+          const layerGroups = dragGroup
+            ? (glyph.layerGroups ?? []).map((g) => {
+                if (g.id !== dragId) return g;
+                const next = { ...g };
+                if (newParent) next.parentId = newParent;
+                else delete next.parentId;
+                return next;
+              })
+            : glyph.layerGroups;
+
+          set({
+            glyphs: {
+              ...s.glyphs,
+              [glyph.id]: pruneEmptyGroups(
+                layerGroups ? { ...glyph, layers, layerGroups } : { ...glyph, layers },
+              ),
+            },
+          });
         },
 
         moveLayer: (layerId, direction) => {

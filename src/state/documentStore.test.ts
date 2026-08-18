@@ -1050,6 +1050,135 @@ describe("layer groups", () => {
     });
   });
 
+  describe("moveUnitTo (drag and drop)", () => {
+    // The array is bottom-to-top; the panel is top-down. "above" therefore means a
+    // HIGHER array index. Every case also asserts contiguity still holds.
+    const contiguousAll = () =>
+      (g().layerGroups ?? []).every((grp) => isContiguous(g(), grp.id));
+
+    it("reorders a plain layer above another", () => {
+      seedLayers(["a", "b", "c"]);
+      state().moveUnitTo("a", "c", "above");
+      expect(order()).toEqual(["b", "c", "a"]);
+    });
+
+    it("reorders a plain layer below another", () => {
+      seedLayers(["a", "b", "c"]);
+      state().moveUnitTo("c", "a", "below");
+      expect(order()).toEqual(["c", "a", "b"]);
+    });
+
+    it("drops a layer INTO a group and re-tags it", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      state().moveUnitTo("c", gid, "inside");
+      expect(groupOf("c")).toBe(gid);
+      expect(contiguousAll()).toBe(true);
+      expect(groupMembers(g(), gid).map((l) => l.id).sort()).toEqual(["a", "b", "c"]);
+    });
+
+    it("drops a layer OUT of a group when dropped beside a top-level row", () => {
+      seedLayers(["a", "b", "c"]);
+      state().groupLayers(["a", "b"]);
+      state().moveUnitTo("a", "c", "above");
+      expect(groupOf("a")).toBeUndefined();
+      expect(contiguousAll()).toBe(true);
+    });
+
+    it("dropping beside a grouped layer ADOPTS that layer's group", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      state().moveUnitTo("c", "a", "below");
+      expect(groupOf("c")).toBe(gid);
+      expect(contiguousAll()).toBe(true);
+    });
+
+    it("moves a whole GROUP as one block", () => {
+      seedLayers(["a", "b", "c"]);
+      const gid = state().groupLayers(["a", "b"])!;
+      state().moveUnitTo(gid, "c", "above");
+      expect(order()).toEqual(["c", "a", "b"]);
+      expect(groupMembers(g(), gid).map((l) => l.id)).toEqual(["a", "b"]);
+      expect(contiguousAll()).toBe(true);
+    });
+
+    it("nests a group inside another group", () => {
+      seedLayers(["a", "b", "c", "d"]);
+      const g1 = state().groupLayers(["a", "b"])!;
+      const g2 = state().groupLayers(["c", "d"])!;
+      state().moveUnitTo(g1, g2, "inside");
+      expect(findGroup(g(), g1)?.parentId).toBe(g2);
+      expect(groupMembers(g(), g2).map((l) => l.id).sort()).toEqual(["a", "b", "c", "d"]);
+      expect(contiguousAll()).toBe(true);
+    });
+
+    it("promotes a nested group back to top level", () => {
+      seedLayers(["a", "b", "c"]);
+      const inner = state().groupLayers(["a"])!;
+      const outer = state().groupLayers(["a", "b"])!;
+      expect(findGroup(g(), inner)?.parentId).toBe(outer);
+      state().moveUnitTo(inner, "c", "above");
+      expect(findGroup(g(), inner)?.parentId).toBeUndefined();
+      expect(contiguousAll()).toBe(true);
+    });
+
+    describe("refuses impossible moves", () => {
+      it("a group into itself", () => {
+        seedLayers(["a", "b"]);
+        const gid = state().groupLayers(["a"])!;
+        const before = order();
+        state().moveUnitTo(gid, gid, "inside");
+        expect(order()).toEqual(before);
+      });
+
+      it("a group into its own descendant", () => {
+        seedLayers(["a", "b"]);
+        const inner = state().groupLayers(["a"])!;
+        const outer = state().groupLayers(["a", "b"])!;
+        state().moveUnitTo(outer, inner, "inside");
+        // outer must NOT become a child of its own child.
+        expect(findGroup(g(), outer)?.parentId).toBeUndefined();
+        expect(findGroup(g(), inner)?.parentId).toBe(outer);
+      });
+
+      it("a group beside a layer inside itself", () => {
+        seedLayers(["a", "b"]);
+        const gid = state().groupLayers(["a"])!;
+        const before = order();
+        state().moveUnitTo(gid, "a", "above");
+        expect(order()).toEqual(before);
+      });
+
+      it("dropping INTO something that is not a group", () => {
+        seedLayers(["a", "b"]);
+        const before = order();
+        state().moveUnitTo("a", "b", "inside");
+        expect(order()).toEqual(before);
+      });
+
+      it("dropping a row onto itself", () => {
+        seedLayers(["a", "b"]);
+        const before = order();
+        state().moveUnitTo("a", "a", "above");
+        expect(order()).toEqual(before);
+      });
+    });
+
+    it("dissolves a group left empty by dragging its last layer out", () => {
+      seedLayers(["a", "b"]);
+      const gid = state().groupLayers(["a"])!;
+      state().moveUnitTo("a", "b", "above");
+      expect(findGroup(g(), gid)).toBeUndefined();
+    });
+
+    it("never disturbs geometry", () => {
+      seedLayers(["a", "b", "c"]);
+      const before = g().layers.map((l) => l.contours);
+      state().moveUnitTo("a", "c", "above");
+      expect(g().layers.map((l) => l.contours).length).toBe(before.length);
+    });
+  });
+
   describe("moveGroup", () => {
     it("moves the whole run past a sibling layer", () => {
       seedLayers(["a", "b", "c"]);
