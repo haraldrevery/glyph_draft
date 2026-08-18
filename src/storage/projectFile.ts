@@ -16,7 +16,7 @@ import type { Glyph } from "../types/document";
  * defaults. That is the rework this design is meant to avoid.
  */
 
-export const CURRENT_VERSION = 7 as const;
+export const CURRENT_VERSION = 8 as const;
 
 /** KV keys. The backup is the previous main, kept so a corrupt write is recoverable. */
 export const STORAGE_KEY = "glyphdraft:project";
@@ -81,7 +81,17 @@ export interface ProjectFileV7 {
   glyphs: Record<string, Glyph>;
 }
 
-export type ProjectFile = ProjectFileV7;
+/** v8 added layer GROUPS: optional `Layer.groupId` and `Glyph.layerGroups`
+ *  (a flat list nested via `LayerGroup.parentId` — the layers array itself stays flat).
+ *  Purely additive: a document with no groups omits both fields entirely, so v7 blobs
+ *  are already valid v8 and the v7→v8 migration is the identity. */
+export interface ProjectFileV8 {
+  version: 8;
+  savedAt: number;
+  glyphs: Record<string, Glyph>;
+}
+
+export type ProjectFile = ProjectFileV8;
 
 /** Wrap the live glyph map in the current envelope for persistence. */
 export function serializeProject(glyphs: Record<string, Glyph>): ProjectFile {
@@ -121,11 +131,13 @@ function asGlyphMap(x: unknown): Record<string, Glyph> | null {
 export function migrate(raw: unknown): Record<string, Glyph> | null {
   if (!isRecord(raw)) return null;
   if (raw.version === CURRENT_VERSION) return asGlyphMap(raw.glyphs);
+  // v7 → v8 (layer groups: optional `Layer.groupId` + `Glyph.layerGroups`),
   // v6 → v7 (optional `Contour.filled` + `StrokeStyle.color`), v5 → v6 (the `"blend"`
   // pair op + `BooleanPair.steps`), v4 → v5 (optional `paint.gradient`), v3 → v4 (optional
   // per-contour `corner`), and v2 → v3 (optional `paint`) are all purely additive, so those
   // blobs are already valid — the migrations are identities.
   if (
+    raw.version === 7 ||
     raw.version === 6 ||
     raw.version === 5 ||
     raw.version === 4 ||

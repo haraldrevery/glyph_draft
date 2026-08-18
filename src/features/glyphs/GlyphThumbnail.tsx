@@ -21,7 +21,7 @@ import type { Glyph } from "../../types/document";
 export function GlyphThumbnail({ glyph }: { glyph: Glyph }) {
   const mergeHalftones = useViewportStore((s) => s.mergeHalftones);
   const fills = useMemo(
-    () => glyphFillGroups(glyph, getGeometryService(), mergeHalftones),
+    () => glyphFillGroups(glyph, getGeometryService(), { mergeHalftones }),
     [glyph, mergeHalftones],
   );
 

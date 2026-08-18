@@ -16,6 +16,43 @@ export interface Layer {
    *  as-is (winding preserved for holes, no stroke expansion, no force-CW union).
    *  Set by the destructive "Merge layers" op; optional so old saves load unchanged. */
   baked?: boolean;
+  /** The `LayerGroup` this layer belongs to, if any (see `Glyph.layerGroups`).
+   *  Optional/additive so old saves load unchanged; `undefined` = top level. */
+  groupId?: string;
+}
+
+/**
+ * A layer GROUP — an Illustrator-style folder over the flat `Glyph.layers` array.
+ *
+ * **The layers array stays FLAT.** Nesting comes from a group carrying a `parentId`,
+ * NOT from nesting `Layer` objects — so arbitrary depth works while every existing
+ * flat walk over `glyph.layers` (the tools, clipboard, geometry ops, the whole fill
+ * pipeline) keeps working untouched. The tree is a VIEW computed over the flat array
+ * by `features/layers/layerTree.ts`.
+ *
+ * **INVARIANT — contiguity:** a group's member layers occupy a contiguous run of
+ * `glyph.layers`. That is what keeps paint order well-defined (a group cannot be
+ * interleaved with outsiders) and makes the tree renderable. Every action that
+ * inserts a layer must therefore place it inside the right run — see the store's
+ * `groupLayers` / insert actions.
+ */
+export interface LayerGroup {
+  id: string;
+  name: string;
+  /** Parent group, for nesting. `undefined` = a top-level group. */
+  parentId?: string;
+  /** Collapsed in the Layers panel (a view flag, but persisted with the document
+   *  so the panel looks the same when a project is reopened). */
+  collapsed?: boolean;
+  /** Group-level visibility/lock. A layer is only editable when it AND every
+   *  ancestor group are visible + unlocked (see `layerTree.effectiveVisible`). */
+  visible: boolean;
+  locked: boolean;
+  /** Render the group's contents as ONE layer: their contours are baked into a
+   *  single fill region (overlaps fuse), and the group can act as a single
+   *  Pathfinder operand. Off ⇒ members render individually, exactly as if the
+   *  group were only an organisational folder. */
+  renderAsOne?: boolean;
 }
 
 /** The four non-destructive Pathfinder boolean operations between two layers. */
@@ -53,4 +90,7 @@ export interface Glyph {
   layers: Layer[];
   /** Active between-layer boolean operations (non-destructive). */
   booleanPairs?: BooleanPair[];
+  /** Layer groups (folders). Flat list; nesting is via `LayerGroup.parentId`.
+   *  Optional/additive so old saves load unchanged. */
+  layerGroups?: LayerGroup[];
 }

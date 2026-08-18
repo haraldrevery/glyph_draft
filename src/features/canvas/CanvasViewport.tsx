@@ -31,6 +31,7 @@ import { StrokePanel } from "./StrokePanel";
 import { FillPanel } from "./FillPanel";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "../../components/menu";
 import { commandMenuItems } from "../../commands";
+import { visibleRows } from "../layers/layerTree";
 import {
   canMovePaths,
   moveSelectedPathsToLayer,
@@ -146,14 +147,18 @@ export function CanvasViewport() {
           if (glyph && canMovePaths()) {
             const refs = selectedContourRefs();
             const allOnLayer = (layerId: string) => refs.every((r) => r.layerId === layerId);
-            const layerItems: ContextMenuItem[] = glyph.layers
-              .slice()
-              .reverse() // top-to-bottom, matching the Layers panel
-              .map((l) => ({
-                label: l.name,
-                disabled: l.locked || allOnLayer(l.id),
-                onSelect: () => moveSelectedPathsToLayer(l.id),
-              }));
+            // Same top-down row order the Layers panel shows, with group members
+            // indented under their folder. A group row is a label only — a group has
+            // no contours of its own, so it is not a move target.
+            const layerItems: ContextMenuItem[] = visibleRows(glyph).map((row) =>
+              row.group
+                ? { label: `${"\u2007".repeat(row.depth * 2)}${row.group.name}`, disabled: true }
+                : {
+                    label: `${"\u2007".repeat(row.depth * 2)}${row.layer!.name}`,
+                    disabled: row.layer!.locked || allOnLayer(row.layer!.id),
+                    onSelect: () => moveSelectedPathsToLayer(row.layer!.id),
+                  },
+            );
             layerItems.push({ label: "New layer", onSelect: () => moveSelectedPathsToNewLayer() });
             items.push({ label: "Move to layer", submenu: layerItems });
           }

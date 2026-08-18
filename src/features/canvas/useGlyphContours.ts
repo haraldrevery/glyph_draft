@@ -3,6 +3,7 @@ import { useActiveGlyph, useActiveLayerId } from "../../state/documentStore";
 import { useEditorStore } from "../../state/editorStore";
 import { layerColorMap } from "../layers/layerColors";
 import type { Contour } from "../../types/geometry";
+import { resolvedLayers } from "../layers/layerTree";
 
 /**
  * Shared render selectors. Both the display (fills + outlines) and the editing
@@ -63,7 +64,7 @@ export function useVisibleRenderLayers(): RenderLayer[] {
   return useMemo(() => {
     const overrides = overridesFrom(live);
     const colors = layerColorMap((glyph?.layers ?? []).map((l) => l.id));
-    return (glyph?.layers ?? [])
+    return (glyph ? resolvedLayers(glyph) : [])
       .filter((l) => l.visible)
       .map((l) => ({
         ...l,
@@ -86,7 +87,7 @@ export function useEditableLayers(): RenderLayer[] {
   return useMemo(() => {
     const overrides = overridesFrom(live);
     const colors = layerColorMap((glyph?.layers ?? []).map((l) => l.id));
-    return (glyph?.layers ?? [])
+    return (glyph ? resolvedLayers(glyph) : [])
       .filter((l) => l.visible && !l.locked)
       .map((l) => ({
         id: l.id,

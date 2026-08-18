@@ -1,13 +1,14 @@
 import { useState } from "react";
 import {
   useActiveGlyph,
+  useActiveGroupId,
   useActiveLayerId,
   useSelectedLayerIds,
   useBooleanPairs,
   pairForLayer,
   useDocumentStore,
 } from "../../state/documentStore";
-import type { BooleanOp, Layer, PairOp } from "../../types/document";
+import type { BooleanOp, Layer, LayerGroup, PairOp } from "../../types/document";
 import { CollapseButton } from "../../components/controls/CollapseButton";
 import { NumberInput } from "../../components/controls/NumberInput";
 import { usePanelDrag } from "../canvas/usePanelDrag";
@@ -17,6 +18,9 @@ import {
   type ContextMenuItem,
 } from "../../components/menu";
 import { LayerRow, OP_LABEL, OP_SYMBOL, pairColor } from "./LayerRow";
+import { GroupRow } from "./GroupRow";
+import { groupMembers, selectionUnits, visibleRows, type SelectionUnit } from "./layerTree";
+import { useRowDrag } from "./useRowDrag";
 import { mergeLayers } from "./mergeLayers";
 import { layerColorMap } from "./layerColors";
 import { useEditorStore } from "../../state/editorStore";
@@ -41,6 +45,7 @@ const MAX_BLEND_STEPS_UI = 32;
 export function LayersPanel() {
   const glyph = useActiveGlyph();
   const activeLayerId = useActiveLayerId();
+  const activeGroupId = useActiveGroupId();
   const selectedLayerIds = useSelectedLayerIds();
   const pairs = useBooleanPairs();
   // Layers that own a selected NODE (a node selection can span layers) — tinted subtly so
@@ -53,6 +58,7 @@ export function LayersPanel() {
   if (!glyph) return null;
 
   const layers = glyph.layers;
+  const rows = visibleRows(glyph);
   const colors = layerColorMap(layers.map((l) => l.id));
   const indexById = new Map(layers.map((l, i) => [l.id, i] as const));
   const activeIndex = layers.findIndex((l) => l.id === activeLayerId);
@@ -76,6 +82,18 @@ export function LayersPanel() {
       onSelect: () => doc().setLayerLocked(layer.id, !layer.locked),
     },
     {
+      label: effectiveIds.length > 1 ? `Group ${effectiveIds.length} layers` : "Group layer",
+      onSelect: () => doc().groupLayers(effectiveIds),
+    },
+    ...(layer.groupId
+      ? [
+          {
+            label: "Ungroup",
+            onSelect: () => layer.groupId && doc().ungroupGroup(layer.groupId),
+          },
+        ]
+      : []),
+    {
       // Destructively bake the selected layers (strokes + any boolean among them)
       // into one flattened layer. Needs ≥2 selected.
       label: `Merge ${effectiveIds.length} layers`,
@@ -89,23 +107,71 @@ export function LayersPanel() {
     },
   ];
 
-  // Pathfinder operands: exactly two selected layers, ordered upper (A) / lower (B).
-  let operands: { upper: string; lower: string; upperName: string; lowerName: string } | null =
-    null;
-  if (selectedLayerIds.length === 2) {
-    const [x, y] = selectedLayerIds;
-    const ix = indexById.get(x!) ?? -1;
-    const iy = indexById.get(y!) ?? -1;
-    if (ix >= 0 && iy >= 0) {
-      const upper = ix > iy ? x! : y!;
-      const lower = ix > iy ? y! : x!;
-      operands = {
-        upper,
-        lower,
-        upperName: layers[indexById.get(upper)!]!.name,
-        lowerName: layers[indexById.get(lower)!]!.name,
-      };
-    }
+  // Drag-and-drop reordering. The hook only reports which row went where; every rule
+  // about what a drop MEANS lives in `moveUnitTo`.
+  const rowDrag = useRowDrag((dragId, targetId, position) =>
+    doc().moveUnitTo(dragId, targetId, position),
+  );
+  /** Drag-state classes for a row: the one being dragged, or the drop indicator. */
+  const dragClassFor = (id: string): string => {
+    const parts: string[] = [];
+    if (rowDrag.draggingId === id) parts.push("layer-row-dragging");
+    if (rowDrag.drop?.id === id) parts.push(`layer-row-drop-${rowDrag.drop.position}`);
+    return parts.join(" ");
+  };
+
+  // The reorder buttons act on whatever the user last clicked: a folder row moves the
+  // WHOLE group, a layer row moves just that layer. Without this, clicking a group and
+  // pressing move would silently reorder one member out of the folder.
+  const moveTarget = (direction: "up" | "down"): void => {
+    if (activeGroupId) doc().moveGroup(activeGroupId, direction);
+    else if (activeLayerId) doc().moveLayer(activeLayerId, direction);
+  };
+
+  // Group-targeted right-click actions.
+  const groupMenuItems = (grp: LayerGroup): ContextMenuItem[] => [
+    {
+      label: grp.collapsed ? "Expand group" : "Collapse group",
+      onSelect: () => doc().setGroupCollapsed(grp.id, !grp.collapsed),
+    },
+    {
+      label: grp.visible ? "Hide group" : "Show group",
+      onSelect: () => doc().setGroupVisible(grp.id, !grp.visible),
+    },
+    {
+      label: grp.locked ? "Unlock group" : "Lock group",
+      onSelect: () => doc().setGroupLocked(grp.id, !grp.locked),
+    },
+    {
+      label: grp.renderAsOne ? "Render separately" : "Render as one layer",
+      onSelect: () => doc().setGroupRenderAsOne(grp.id, !grp.renderAsOne),
+    },
+    { label: "Ungroup", onSelect: () => doc().ungroupGroup(grp.id) },
+    {
+      label: `Merge ${groupMembers(glyph, grp.id).length} layers`,
+      onSelect: () => mergeLayers(groupMembers(glyph, grp.id).map((l) => l.id)),
+      disabled: groupMembers(glyph, grp.id).length < 2,
+    },
+  ];
+
+  // Pathfinder operands: exactly two selected UNITS, ordered upper (A) / lower (B).
+  // A unit is a layer or a whole group, so selecting a folder (which selects all its
+  // members) counts as ONE operand rather than N.
+  const units = selectionUnits(glyph, selectedLayerIds);
+  let operands:
+    | { upper: string; lower: string; upperName: string; lowerName: string; hasGroup: boolean }
+    | null = null;
+  if (units.length === 2) {
+    const [x, y] = units as [SelectionUnit, SelectionUnit];
+    const hi = x.at > y.at ? x : y;
+    const lo = x.at > y.at ? y : x;
+    operands = {
+      upper: hi.id,
+      lower: lo.id,
+      upperName: hi.name,
+      lowerName: lo.name,
+      hasGroup: x.isGroup || y.isGroup,
+    };
   }
   // If these two operands are already a Blend pair, surface its step count for editing.
   const activePair = operands ? pairForLayer(pairs, operands.upper) : undefined;
@@ -152,10 +218,17 @@ export function LayersPanel() {
                 key={op}
                 type="button"
                 className="pathfinder-op"
+                // Blend morphs the RAW contours, but a group operand is already baked
+                // to its rendered outline — the morph would silently lose handles and
+                // the stroke-width interpolation. Better to disable it than to ship a
+                // degraded result that looks like a bug.
+                disabled={op === "blend" && operands!.hasGroup}
                 title={
-                  op === "blend"
-                    ? "Blend (A → B shape morph / echo)"
-                    : `${OP_LABEL[op]} (A ${OP_SYMBOL[op]} B)`
+                  op === "blend" && operands!.hasGroup
+                    ? "Blend doesn't support groups — pair two plain layers"
+                    : op === "blend"
+                      ? "Blend (A → B shape morph / echo)"
+                      : `${OP_LABEL[op]} (A ${OP_SYMBOL[op]} B)`
                 }
                 onClick={() =>
                   doc().setBooleanPair(
@@ -195,10 +268,42 @@ export function LayersPanel() {
       )}
 
       <div className="layer-list" role="list">
-        {layers
-          .slice()
-          .reverse()
-          .map((layer) => {
+        {/* Rows come from the group tree (top-down, collapse-aware) rather than a raw
+            reversed array — `visibleRows` is the one flattening the panel, Shift-range
+            selection and the tree helpers all share. */}
+        {rows.map((row) => {
+          if (row.group) {
+            const grp = row.group;
+            const memberIds = groupMembers(glyph, grp.id).map((l) => l.id);
+            // A group row reads as "selected" when its whole membership is.
+            const allSelected =
+              memberIds.length > 0 && memberIds.every((id) => selectedLayerIds.includes(id));
+            return (
+              <GroupRow
+                key={grp.id}
+                group={grp}
+                depth={row.depth}
+                active={grp.id === activeGroupId}
+                selected={allSelected}
+                onSelect={({ additive, range }) => {
+                  if (range && memberIds[0]) doc().selectLayerRange(memberIds[0]);
+                  else doc().selectGroup(grp.id, additive);
+                }}
+                onToggleCollapsed={() => doc().setGroupCollapsed(grp.id, !grp.collapsed)}
+                onToggleVisible={() => doc().setGroupVisible(grp.id, !grp.visible)}
+                onToggleLock={() => doc().setGroupLocked(grp.id, !grp.locked)}
+                onRename={(name) => doc().renameGroup(grp.id, name)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  ctxMenu.open(e.clientX, e.clientY, groupMenuItems(grp));
+                }}
+                dragProps={rowDrag.rowProps({ id: grp.id, isGroup: true })}
+                dragClass={dragClassFor(grp.id)}
+              />
+            );
+          }
+          const layer = row.layer!;
+          {
             const pair = pairForLayer(pairs, layer.id);
             let pairProp: { op: PairOp; role: "A" | "B"; color: string } | undefined;
             if (pair) {
@@ -238,9 +343,13 @@ export function LayersPanel() {
                   if (!inSel) doc().setActiveLayer(layer.id);
                   ctxMenu.open(e.clientX, e.clientY, layerMenuItems(layer, effectiveIds));
                 }}
+                depth={row.depth}
+                dragProps={rowDrag.rowProps({ id: layer.id, isGroup: false })}
+                dragClass={dragClassFor(layer.id)}
               />
             );
-          })}
+          }
+        })}
       </div>
 
       <div className="layer-actions">
@@ -271,7 +380,7 @@ export function LayersPanel() {
           className="icon-btn"
           title="Move up"
           disabled={atTop || activeIndex < 0}
-          onClick={() => activeLayerId && doc().moveLayer(activeLayerId, "up")}
+          onClick={() => moveTarget("up")}
         >
           <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
             <path d="M8 12V4M4.5 7.5L8 4l3.5 3.5" />
@@ -282,7 +391,7 @@ export function LayersPanel() {
           className="icon-btn"
           title="Move down"
           disabled={atBottom || activeIndex < 0}
-          onClick={() => activeLayerId && doc().moveLayer(activeLayerId, "down")}
+          onClick={() => moveTarget("down")}
         >
           <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
             <path d="M8 4v8M4.5 8.5L8 12l3.5-3.5" />

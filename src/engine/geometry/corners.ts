@@ -93,13 +93,22 @@ function roundOne(P: AnchorPoint, prev: AnchorPoint, next: AnchorPoint, style: C
   ];
 }
 
-const cache = new WeakMap<Contour, Contour>();
+/** Memo entry: the result AND the style it was computed for. The style must be part
+ *  of the validity check — keying on the contour alone silently returns the first
+ *  style's geometry when the same contour is rendered with a different one. Mirrors
+ *  `PaperGeometryService.expandStroke`, which validates `stroke ===` the same way. */
+const cache = new WeakMap<Contour, { style: CornerStyle; result: Contour }>();
 
-/** Round every eligible corner node of `contour` per `style` (memoized by contour
- *  identity — immutable contours make identity = content, so an edit recomputes). */
+/** Round every eligible corner node of `contour` per `style`.
+ *
+ *  Memoized by contour identity + style REFERENCE: immutable contours make identity =
+ *  content, so an edit recomputes. In the render path the style always comes from
+ *  `contour.corner`, so contour identity implies style identity and the memo hits on
+ *  every frame of a drag; a caller passing a fresh style object recomputes (correct,
+ *  if slightly conservative — reference equality, not deep equality). */
 export function roundCorners(contour: Contour, style: CornerStyle): Contour {
   const hit = cache.get(contour);
-  if (hit) return hit;
+  if (hit && hit.style === style) return hit.result;
 
   const pts = contour.points;
   const n = pts.length;
@@ -122,6 +131,19 @@ export function roundCorners(contour: Contour, style: CornerStyle): Contour {
   }
 
   const result: Contour = { ...contour, points: out };
-  cache.set(contour, result);
+  cache.set(contour, { style, result });
   return result;
+}
+
+/**
+ * Apply a contour's OWN corner treatment, if it has one.
+ *
+ * This is the single place that decides whether corner rounding applies. Use it
+ * everywhere a contour is about to be rendered, stroke-expanded or measured, so the
+ * canvas, the baked "Expand stroke" outline and the outline-mode align bounds cannot
+ * diverge. (They did: renderContours rounded first while editActions expanded the raw
+ * contour, so a corner-styled path rendered rounded but baked and aligned sharp.)
+ */
+export function withCorners(contour: Contour): Contour {
+  return contour.corner ? roundCorners(contour, contour.corner) : contour;
 }

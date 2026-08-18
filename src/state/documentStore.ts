@@ -1,11 +1,20 @@
 import { useMemo } from "react";
 import { create } from "zustand";
-import type { BooleanPair, Glyph, Layer, PairOp } from "../types/document";
+import type { BooleanPair, Glyph, Layer, LayerGroup, PairOp } from "../types/document";
 import type { AnchorPoint, Contour, CornerStyle, GradientFill, Paint, PointRef, StrokeStyle } from "../types/geometry";
 import { DEFAULT_STROKE } from "../types/geometry";
 import { createId } from "../utils/id";
 import { extractContours, joinContours, splitContourAt, splitContourAtPoints } from "../engine/geometry/topology";
 import { convertPoint } from "../engine/geometry/nodeHandles";
+import {
+  ancestors,
+  descendantGroups,
+  effectiveLocked,
+  findGroup,
+  groupMembers,
+  groupRange,
+  visibleRows,
+} from "../features/layers/layerTree";
 import { DEFAULT_METRICS } from "../constants/metrics";
 import {
   cloneLayer,
@@ -55,6 +64,10 @@ interface DocumentState {
    *  layer selects only it; Ctrl/Cmd+click toggles others in. Drives the
    *  layer-level Pathfinder and multi-layer operations. Not undoable. */
   selectedLayerIds: string[];
+  /** The GROUP row the user last clicked, or null when the target is a plain layer.
+   *  Lets the panel's move/duplicate/delete act on the whole folder instead of on
+   *  one member. Session state like `activeLayerId` — never undoable. */
+  activeGroupId: string | null;
 
   ensureActiveTarget: () => EditTarget;
   setActiveGlyph: (glyphId: string) => void;
@@ -177,11 +190,156 @@ interface DocumentState {
    *  the merged geometry (keeps Paper.js out of the store). One undo step. */
   commitMerge: (removeIds: string[], merged: Layer) => void;
   moveLayer: (layerId: string, direction: "up" | "down") => void;
+
+  // ---- Layer groups (folders) ------------------------------------------------
+  // `glyph.layers` stays FLAT; groups live in `glyph.layerGroups` and nest via
+  // `parentId`. See `features/layers/layerTree.ts` for the tree view, and the
+  // CONTIGUITY invariant on `LayerGroup`: a group's members occupy an unbroken run
+  // of `glyph.layers`, which these actions maintain.
+
+  /** Put the given layers into a NEW group, reordering them into one contiguous run
+   *  at the topmost member's position. Nests under the common parent group when the
+   *  members already share one. Returns the new group id (null if it did nothing).
+   *  One undo step. */
+  groupLayers: (layerIds: string[], name?: string) => string | null;
+  /** Dissolve a group: its layers and child groups are re-parented to the group's own
+   *  parent (so an inner group survives), and the group is removed. Geometry and stack
+   *  order are untouched. One undo step. */
+  ungroupGroup: (groupId: string) => void;
+  renameGroup: (groupId: string, name: string) => void;
+  setGroupCollapsed: (groupId: string, collapsed: boolean) => void;
+  setGroupVisible: (groupId: string, visible: boolean) => void;
+  setGroupLocked: (groupId: string, locked: boolean) => void;
+  /** Render the group's contents as ONE layer (Stage 4). Stored now so the flag
+   *  round-trips through save/load before anything consumes it. */
+  setGroupRenderAsOne: (groupId: string, renderAsOne: boolean) => void;
+  /** Select every layer in a group (Ctrl/Cmd+click adds to the current selection).
+   *  The group's lowest member becomes active so new geometry lands inside it. */
+  selectGroup: (groupId: string, additive?: boolean) => void;
+  /**
+   * Drag-and-drop move: put a layer OR group at a drop position relative to another
+   * row. `position` is in PANEL terms (top-down): "above"/"below" place the unit as a
+   * sibling of `targetId`, adopting its parent; "inside" drops it into a group.
+   *
+   * The single place drop semantics live, so the panel only has to report what the
+   * pointer did. Preserves the CONTIGUITY invariant by moving the unit's whole layer
+   * run as one block, and refuses moves that would create a cycle. One undo step.
+   */
+  moveUnitTo: (
+    dragId: string,
+    targetId: string,
+    position: "above" | "below" | "inside",
+  ) => void;
+  /** Move a whole group past its adjacent SIBLING (same parent). A move that would
+   *  cross a parent boundary is a no-op — re-parenting is a drag-and-drop concern. */
+  moveGroup: (groupId: string, direction: "up" | "down") => void;
+}
+
+/**
+ * Write a group list back onto a glyph, dropping the key entirely when it is empty so
+ * an ungrouped document stays byte-identical to a pre-groups save.
+ */
+function withGroups(glyph: Glyph, groups: LayerGroup[]): Glyph {
+  if (groups.length === 0) {
+    const next = { ...glyph };
+    delete next.layerGroups;
+    return next;
+  }
+  return { ...glyph, layerGroups: groups };
+}
+
+/**
+ * Drop groups that no longer hold any layer (directly or through a descendant), plus
+ * any boolean pair that referenced one. Runs after a delete/merge so a dissolved
+ * folder cannot linger as a phantom panel row or a stale Pathfinder operand.
+ *
+ * Iterates to a fixed point: emptying an inner group can empty its parent too.
+ */
+function pruneEmptyGroups(glyph: Glyph): Glyph {
+  const groups = glyph.layerGroups ?? [];
+  if (groups.length === 0) return glyph;
+
+  let keep = groups;
+  for (;;) {
+    const keepIds = new Set(keep.map((g) => g.id));
+    const holdsLayer = new Set(
+      glyph.layers.map((l) => l.groupId).filter((id): id is string => !!id && keepIds.has(id)),
+    );
+    // A group survives if it holds a layer directly, or if a surviving child does.
+    const survives = new Set<string>();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const g of keep) {
+        if (survives.has(g.id)) continue;
+        const childSurvives = keep.some((c) => c.parentId === g.id && survives.has(c.id));
+        if (holdsLayer.has(g.id) || childSurvives) {
+          survives.add(g.id);
+          changed = true;
+        }
+      }
+    }
+    const next = keep.filter((g) => survives.has(g.id));
+    if (next.length === keep.length) break;
+    keep = next;
+  }
+  if (keep.length === groups.length) return glyph;
+
+  const gone = new Set(groups.filter((g) => !keep.some((k) => k.id === g.id)).map((g) => g.id));
+  const out = withGroups(glyph, keep);
+  if (out.booleanPairs) {
+    const pairs = out.booleanPairs.filter((p) => !p.layerIds.some((id) => gone.has(id)));
+    if (pairs.length !== out.booleanPairs.length) {
+      return pairs.length ? { ...out, booleanPairs: pairs } : (() => {
+        const o = { ...out };
+        delete o.booleanPairs;
+        return o;
+      })();
+    }
+  }
+  return out;
+}
+
+/** The current parent of a unit (a group's parentId, or a layer's groupId). */
+function newParentOf(glyph: Glyph, unitId: string): string | undefined {
+  const g = glyph.layerGroups?.find((x) => x.id === unitId);
+  if (g) return g.parentId;
+  return glyph.layers.find((l) => l.id === unitId)?.groupId;
+}
+
+/** "Group 1", "Group 2", … skipping names already taken. */
+function nextGroupName(glyph: Glyph): string {
+  const taken = new Set((glyph.layerGroups ?? []).map((g) => g.name));
+  for (let n = (glyph.layerGroups ?? []).length + 1; ; n += 1) {
+    const name = `Group ${n}`;
+    if (!taken.has(name)) return name;
+  }
+}
+
+/**
+ * Walk up from `groupId` until we find the group whose parent is `parentId` — i.e. the
+ * sibling-level block containing it. Returns null when `groupId` is not inside
+ * `parentId` at all (so a move must not cross into it).
+ */
+function siblingAncestor(glyph: Glyph, groupId: string, parentId?: string): string | null {
+  const chain = [groupId, ...ancestors(glyph, groupId).map((g) => g.id)];
+  for (const id of chain) {
+    if ((findGroup(glyph, id)?.parentId ?? undefined) === (parentId ?? undefined)) return id;
+  }
+  return null;
+}
+
+/** The group a newly inserted layer should join: the active layer's own group, so a
+ *  new/duplicated/imported layer placed just above it cannot split that group's run
+ *  (the CONTIGUITY invariant). Undefined = top level. */
+function inheritGroupId(glyph: Glyph, activeLayerId: string | null): string | undefined {
+  if (!activeLayerId) return undefined;
+  return glyph.layers.find((l) => l.id === activeLayerId)?.groupId;
 }
 
 function seed(): Pick<
   DocumentState,
-  "glyphs" | "activeGlyphId" | "activeLayerId" | "selectedLayerIds"
+  "glyphs" | "activeGlyphId" | "activeLayerId" | "selectedLayerIds" | "activeGroupId"
 > {
   const glyph = createDefaultGlyph(DEFAULT_METRICS);
   const layerId = glyph.layers[0]!.id;
@@ -190,6 +348,7 @@ function seed(): Pick<
     activeGlyphId: glyph.id,
     activeLayerId: layerId,
     selectedLayerIds: [layerId],
+    activeGroupId: null,
   };
 }
 
@@ -207,9 +366,59 @@ export const useDocumentStore = create<DocumentState>()(
         if (!target) return;
         const glyph = s.glyphs[target.glyphId];
         const layer = glyph ? findLayer(glyph, target.layerId) : undefined;
-        if (!glyph || !layer || layer.locked) return;
+        if (!glyph || !layer || effectiveLocked(glyph, layer)) return;
         const nextGlyph = updateLayerContours(glyph, target.layerId, fn);
         set({ glyphs: { ...s.glyphs, [target.glyphId]: nextGlyph } });
+      };
+
+      /**
+       * Cross-layer per-contour edit: apply `fn` to every contour named in
+       * `contourIds`, across ALL unlocked layers of the active glyph, as ONE undo
+       * step. A node selection routinely spans layers (each path is often its own
+       * layer), which is why this is not scoped to the active layer.
+       *
+       * `fn` returns the replacement contour, or `null` to leave that contour alone —
+       * the stroke-only actions use `null` so they never add a stroke to an unstroked
+       * path. Layers with no match keep their identity, which the identity-keyed
+       * geometry caches depend on (Invariant 3).
+       *
+       * Every per-contour STYLE action goes through here, so adding the next one
+       * (a custom cap, a per-node corner) is a few lines rather than another copy of
+       * this traversal.
+       */
+      const patchContours = (contourIds: string[], fn: (c: Contour) => Contour | null): void => {
+        const s = get();
+        if (!s.activeGlyphId) return;
+        const glyph = s.glyphs[s.activeGlyphId];
+        if (!glyph) return;
+        const ids = new Set(contourIds);
+        const layers = glyph.layers.map((layer) => {
+          if (effectiveLocked(glyph, layer)) return layer;
+          let changed = false;
+          const contours = layer.contours.map((c) => {
+            if (!ids.has(c.id)) return c;
+            const next = fn(c);
+            if (!next) return c;
+            changed = true;
+            return next;
+          });
+          return changed ? { ...layer, contours } : layer;
+        });
+        // NB: always commits, exactly as the eight hand-written versions did — a
+        // no-match call still produces a new glyph object (and so an undo step).
+        // Preserved deliberately; changing it is a behaviour change, not a refactor.
+        set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
+      };
+
+      /** Group-list edit on the active glyph. One undo step; an empty result drops
+       *  the `layerGroups` key so an ungrouped document stays as it was. */
+      const mutateGroups = (fn: (groups: LayerGroup[]) => LayerGroup[]): void => {
+        const s = get();
+        if (!s.activeGlyphId) return;
+        const glyph = s.glyphs[s.activeGlyphId];
+        if (!glyph) return;
+        const next = fn(glyph.layerGroups ?? []);
+        set({ glyphs: { ...s.glyphs, [glyph.id]: withGroups(glyph, next) } });
       };
 
       /** Layer-array edit on the active glyph (lock does not apply). */
@@ -276,15 +485,21 @@ export const useDocumentStore = create<DocumentState>()(
           if (activeLayerId && !selectedLayerIds.includes(activeLayerId)) {
             selectedLayerIds = [activeLayerId];
           }
+          // A targeted group can vanish (undo, ungroup, prune) — drop the pointer.
+          const activeGroupId =
+            glyph && s.activeGroupId && findGroup(glyph, s.activeGroupId)
+              ? s.activeGroupId
+              : null;
           const selChanged =
             selectedLayerIds.length !== s.selectedLayerIds.length ||
             selectedLayerIds.some((id, i) => s.selectedLayerIds[i] !== id);
           if (
             activeGlyphId !== s.activeGlyphId ||
             activeLayerId !== s.activeLayerId ||
+            activeGroupId !== s.activeGroupId ||
             selChanged
           ) {
-            set({ activeGlyphId, activeLayerId, selectedLayerIds });
+            set({ activeGlyphId, activeLayerId, selectedLayerIds, activeGroupId });
           }
         },
 
@@ -405,7 +620,7 @@ export const useDocumentStore = create<DocumentState>()(
           if (!glyph) return;
           const byId = new Map(updated.map((c) => [c.id, c] as const));
           const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
+            if (effectiveLocked(glyph, layer)) return layer;
             let changed = false;
             const contours = layer.contours.map((c) => {
               const next = byId.get(c.id);
@@ -418,204 +633,85 @@ export const useDocumentStore = create<DocumentState>()(
         },
 
         setContourStroke: (contourIds, stroke) => {
-          // Cross-layer: a node selection can span layers (each path is often its own
-          // layer), so set the stroke on every matching contour across all unlocked
-          // layers — one undo step. Unchanged layers keep identity (see `changed`).
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const applyStroke = (c: Contour): Contour => {
+          // Whole-stroke replace (the enable toggle + preset apply). `null` removes it.
+          // Shape edits use patchContourStroke instead, so they can't clobber colour.
+          patchContours(contourIds, (c) => {
             if (stroke) return { ...c, stroke };
             const next = { ...c };
             delete next.stroke;
             return next;
-          };
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id)) return c;
-              changed = true;
-              return applyStroke(c);
-            });
-            return changed ? { ...layer, contours } : layer;
           });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
         },
 
         patchContourStroke: (contourIds, patch) => {
           // Merge ONLY the changed shape field(s) into each contour's OWN stroke (seeding a
           // default for an unstroked target), so a Stroke-panel shape edit preserves each
           // path's colour/gradient and other differing fields — it never rewrites colour.
-          // One undo step; mirrors setContourStroke's layer surgery.
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id)) return c;
-              changed = true;
-              return { ...c, stroke: { ...(c.stroke ?? DEFAULT_STROKE), ...patch } };
-            });
-            return changed ? { ...layer, contours } : layer;
-          });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
+          patchContours(contourIds, (c) => ({
+            ...c,
+            stroke: { ...(c.stroke ?? DEFAULT_STROKE), ...patch },
+          }));
         },
 
         removeStrokeKeys: (contourIds, keys) => {
           // Delete the given stroke field(s) per contour (preserving the rest, incl. colour).
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id) || !c.stroke) return c;
-              changed = true;
-              const stroke = { ...c.stroke };
-              for (const k of keys) delete stroke[k];
-              return { ...c, stroke };
-            });
-            return changed ? { ...layer, contours } : layer;
+          patchContours(contourIds, (c) => {
+            if (!c.stroke) return null; // never adds a stroke to an unstroked path
+            const stroke = { ...c.stroke };
+            for (const k of keys) delete stroke[k];
+            return { ...c, stroke };
           });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
         },
 
         setContourPaint: (contourIds, paint) => {
-          // Cross-layer fill paint (default ink = no paint). One undo step; mirrors
-          // setContourStroke. `null` clears the paint back to the default black.
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const applyPaint = (c: Contour): Contour => {
+          // Fill paint (default ink = no paint). `null` clears it back to black.
+          patchContours(contourIds, (c) => {
             if (paint) return { ...c, paint };
             const next = { ...c };
             delete next.paint;
             return next;
-          };
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id)) return c;
-              changed = true;
-              return applyPaint(c);
-            });
-            return changed ? { ...layer, contours } : layer;
           });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
         },
 
         setContourFilled: (contourIds, filled) => {
-          // Cross-layer interior-fill flag (independent of stroke). One undo step;
-          // mirrors setContourPaint. `null` clears it back to the legacy default.
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const applyFilled = (c: Contour): Contour => {
+          // Interior-fill flag, INDEPENDENT of stroke (a closed path can have both).
+          // `null` clears it back to the legacy default rule.
+          patchContours(contourIds, (c) => {
             if (filled === null) {
               const next = { ...c };
               delete next.filled;
               return next;
             }
             return { ...c, filled };
-          };
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id)) return c;
-              changed = true;
-              return applyFilled(c);
-            });
-            return changed ? { ...layer, contours } : layer;
           });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
         },
 
         setStrokeColor: (contourIds, color) => {
-          // Cross-layer outline colour — sets `stroke.color` ONLY on contours that already
-          // have a stroke (never adds one to an unstroked path). One undo step.
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id) || !c.stroke) return c;
-              changed = true;
-              return { ...c, stroke: { ...c.stroke, color } };
-            });
-            return changed ? { ...layer, contours } : layer;
-          });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
+          // Outline colour — ONLY on contours that already have a stroke.
+          patchContours(contourIds, (c) =>
+            c.stroke ? { ...c, stroke: { ...c.stroke, color } } : null,
+          );
         },
 
         setStrokeGradient: (contourIds, gradient) => {
-          // Cross-layer outline gradient — sets/clears `stroke.gradient` ONLY on contours
-          // that already have a stroke. `null` removes it. One undo step.
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id) || !c.stroke) return c;
-              changed = true;
-              if (gradient) return { ...c, stroke: { ...c.stroke, gradient } };
-              const stroke = { ...c.stroke };
-              delete stroke.gradient;
-              return { ...c, stroke };
-            });
-            return changed ? { ...layer, contours } : layer;
+          // Outline gradient — ONLY on contours that already have a stroke. `null` removes it.
+          patchContours(contourIds, (c) => {
+            if (!c.stroke) return null;
+            if (gradient) return { ...c, stroke: { ...c.stroke, gradient } };
+            const stroke = { ...c.stroke };
+            delete stroke.gradient;
+            return { ...c, stroke };
           });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
         },
 
         setContourCorner: (contourIds, corner) => {
-          // Cross-layer path-corner style (round/chamfer/inverted). One undo step;
-          // mirrors setContourPaint. `null` clears it back to sharp corners.
-          const s = get();
-          if (!s.activeGlyphId) return;
-          const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph) return;
-          const ids = new Set(contourIds);
-          const applyCorner = (c: Contour): Contour => {
+          // Path-corner style (round/chamfer/inverted). `null` clears to sharp corners.
+          patchContours(contourIds, (c) => {
             if (corner) return { ...c, corner };
             const next = { ...c };
             delete next.corner;
             return next;
-          };
-          const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
-            let changed = false;
-            const contours = layer.contours.map((c) => {
-              if (!ids.has(c.id)) return c;
-              changed = true;
-              return applyCorner(c);
-            });
-            return changed ? { ...layer, contours } : layer;
           });
-          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
         },
 
         updatePoint: (contourId, point) =>
@@ -641,7 +737,7 @@ export const useDocumentStore = create<DocumentState>()(
           }
           const layers = glyph.layers.map((layer) => {
             const byContour = byLayer.get(layer.id);
-            if (!byContour || layer.locked) return layer;
+            if (!byContour || effectiveLocked(glyph, layer)) return layer;
             const contours = layer.contours
               .map((c) => {
                 const drop = byContour.get(c.id);
@@ -672,7 +768,7 @@ export const useDocumentStore = create<DocumentState>()(
           }
           const layers = glyph.layers.map((layer) => {
             const byContour = byLayer.get(layer.id);
-            if (!byContour || layer.locked) return layer;
+            if (!byContour || effectiveLocked(glyph, layer)) return layer;
             const contours = layer.contours.flatMap((c) => {
               const drop = byContour.get(c.id);
               if (!drop) return [c];
@@ -693,7 +789,7 @@ export const useDocumentStore = create<DocumentState>()(
           if (!glyph) return;
           let didCut = false;
           const layers = glyph.layers.map((layer) => {
-            if (layer.id !== layerId || layer.locked) return layer;
+            if (layer.id !== layerId || effectiveLocked(glyph, layer)) return layer;
             const contours = layer.contours.flatMap((c) => {
               if (c.id !== contourId) return [c];
               const out = splitContourAt(c, segIndex, t);
@@ -725,7 +821,7 @@ export const useDocumentStore = create<DocumentState>()(
           let didCut = false;
           const layers = glyph.layers.map((layer) => {
             const byContour = byLayer.get(layer.id);
-            if (!byContour || layer.locked) return layer;
+            if (!byContour || effectiveLocked(glyph, layer)) return layer;
             const contours = layer.contours.flatMap((c) => {
               const cc = byContour.get(c.id);
               if (!cc) return [c];
@@ -749,7 +845,7 @@ export const useDocumentStore = create<DocumentState>()(
           if (!glyph) return;
           let changed = false;
           const layers = glyph.layers.map((layer) => {
-            if (layer.id !== layerId || layer.locked) return layer;
+            if (layer.id !== layerId || effectiveLocked(glyph, layer)) return layer;
             const contours = layer.contours.flatMap((c) => {
               if (c.id !== contourId) return [c];
               const pieces = splitContourAtPoints(c, [entry, exit]);
@@ -794,7 +890,7 @@ export const useDocumentStore = create<DocumentState>()(
           }
           const layers = glyph.layers.map((layer) => {
             const byContour = byLayer.get(layer.id);
-            if (!byContour || layer.locked) return layer;
+            if (!byContour || effectiveLocked(glyph, layer)) return layer;
             const contours = layer.contours.map((c) => {
               const ids = byContour.get(c.id);
               if (!ids) return c;
@@ -884,7 +980,7 @@ export const useDocumentStore = create<DocumentState>()(
           if (!glyph) return;
           const drop = new Set(contourIds);
           const layers = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
+            if (effectiveLocked(glyph, layer)) return layer;
             const kept = layer.contours.filter((c) => !drop.has(c.id));
             return kept.length === layer.contours.length ? layer : { ...layer, contours: kept };
           });
@@ -913,7 +1009,7 @@ export const useDocumentStore = create<DocumentState>()(
               const kept = layer.contours.filter((c) => !movedIds.has(c.id));
               return { ...layer, contours: [...kept, ...moving] };
             }
-            if (layer.locked) return layer;
+            if (effectiveLocked(glyph, layer)) return layer;
             const kept = layer.contours.filter((c) => !movedIds.has(c.id));
             return kept.length === layer.contours.length ? layer : { ...layer, contours: kept };
           });
@@ -936,7 +1032,7 @@ export const useDocumentStore = create<DocumentState>()(
           const dest = { ...makeEmptyLayer(nextLayerName(glyph)), contours: moving };
           // Drop the moved contours from their sources, then add the new layer on top.
           const stripped = glyph.layers.map((layer) => {
-            if (layer.locked) return layer;
+            if (effectiveLocked(glyph, layer)) return layer;
             const kept = layer.contours.filter((c) => !movedIds.has(c.id));
             return kept.length === layer.contours.length ? layer : { ...layer, contours: kept };
           });
@@ -953,11 +1049,15 @@ export const useDocumentStore = create<DocumentState>()(
           if (!s.activeGlyphId) return;
           const glyph = s.glyphs[s.activeGlyphId];
           if (!glyph || contours.length === 0) return;
+          // Inherit the active layer's group so the splice above it cannot
+          // split that group's contiguous run.
+          const inheritedGid = inheritGroupId(glyph, s.activeLayerId);
           // Baked = render the imported geometry verbatim (holes/colours preserved).
           const layer: Layer = {
             ...makeEmptyLayer(name ?? nextLayerName(glyph)),
             contours,
             baked: true,
+            ...(inheritedGid ? { groupId: inheritedGid } : {}),
           };
           const at = glyph.layers.findIndex((l) => l.id === s.activeLayerId);
           const insert = at >= 0 ? at + 1 : glyph.layers.length;
@@ -981,10 +1081,14 @@ export const useDocumentStore = create<DocumentState>()(
             return kept.length === layer.contours.length ? layer : { ...layer, contours: kept };
           });
           // Baked = render the expanded outline verbatim (holes/winding preserved).
+          // Inherit the active layer's group so the splice above it cannot
+          // split that group's contiguous run.
+          const inheritedGid = inheritGroupId(glyph, s.activeLayerId);
           const layer: Layer = {
             ...makeEmptyLayer(name ?? nextLayerName(glyph)),
             contours: expanded,
             baked: true,
+            ...(inheritedGid ? { groupId: inheritedGid } : {}),
           };
           const at = stripped.findIndex((l) => l.id === s.activeLayerId);
           const insert = at >= 0 ? at + 1 : stripped.length;
@@ -999,9 +1103,10 @@ export const useDocumentStore = create<DocumentState>()(
         setActiveLayer: (layerId) => {
           const s = get();
           const glyph = s.activeGlyphId ? s.glyphs[s.activeGlyphId] : null;
-          // Plain activation selects only this layer (single-select).
+          // Plain activation selects only this layer (single-select) and clears any
+          // group target, so the reorder buttons act on the layer again.
           if (glyph && findLayer(glyph, layerId)) {
-            set({ activeLayerId: layerId, selectedLayerIds: [layerId] });
+            set({ activeLayerId: layerId, selectedLayerIds: [layerId], activeGroupId: null });
           }
         },
 
@@ -1017,10 +1122,14 @@ export const useDocumentStore = create<DocumentState>()(
               s.activeLayerId === layerId
                 ? selectedLayerIds[selectedLayerIds.length - 1] ?? s.activeLayerId
                 : s.activeLayerId;
-            set({ selectedLayerIds, activeLayerId });
+            set({ selectedLayerIds, activeLayerId, activeGroupId: null });
           } else {
             // Add and make it active so edits target the just-clicked layer.
-            set({ selectedLayerIds: [...s.selectedLayerIds, layerId], activeLayerId: layerId });
+            set({
+              selectedLayerIds: [...s.selectedLayerIds, layerId],
+              activeLayerId: layerId,
+              activeGroupId: null,
+            });
           }
         },
 
@@ -1030,15 +1139,33 @@ export const useDocumentStore = create<DocumentState>()(
           if (!glyph || !findLayer(glyph, layerId)) return;
           const anchorId = s.activeLayerId;
           const anchorIdx = glyph.layers.findIndex((l) => l.id === anchorId);
-          const targetIdx = glyph.layers.findIndex((l) => l.id === layerId);
           // No valid anchor → behave like a plain activation of the clicked layer.
           if (anchorIdx < 0) {
             set({ activeLayerId: layerId, selectedLayerIds: [layerId] });
             return;
           }
-          const lo = Math.min(anchorIdx, targetIdx);
-          const hi = Math.max(anchorIdx, targetIdx);
-          const selectedLayerIds = glyph.layers.slice(lo, hi + 1).map((l) => l.id);
+          // Range over the PANEL's row order, not the raw array: with groups the two
+          // differ (a collapsed group hides rows), and selecting a layer the user
+          // cannot see would be a surprise. Layers inside a collapsed group are
+          // therefore skipped, and a group row contributes all of its members.
+          const rows = visibleRows(glyph);
+          const rowIds: string[][] = rows.map((r) =>
+            r.group ? groupMembers(glyph, r.group.id).map((l) => l.id) : [r.layer!.id],
+          );
+          const rowOf = (id: string): number =>
+            rowIds.findIndex((ids) => ids.includes(id));
+          const a = rowOf(anchorId!);
+          const b = rowOf(layerId);
+          if (a < 0 || b < 0) {
+            set({ activeLayerId: layerId, selectedLayerIds: [layerId] });
+            return;
+          }
+          const from = Math.min(a, b);
+          const to = Math.max(a, b);
+          // Keep the result in STACK order (bottom-to-top), matching `glyph.layers`
+          // and the pre-groups behaviour — `visibleRows` is top-down for display only.
+          const picked = new Set(rowIds.slice(from, to + 1).flat());
+          const selectedLayerIds = glyph.layers.filter((l) => picked.has(l.id)).map((l) => l.id);
           // Keep the anchor active so repeated Shift+clicks extend from the same row.
           set({ selectedLayerIds });
         },
@@ -1048,7 +1175,11 @@ export const useDocumentStore = create<DocumentState>()(
           if (!s.activeGlyphId) return;
           const glyph = s.glyphs[s.activeGlyphId];
           if (!glyph) return;
-          const layer = makeEmptyLayer(nextLayerName(glyph));
+          const inherited = inheritGroupId(glyph, s.activeLayerId);
+          const base = makeEmptyLayer(nextLayerName(glyph));
+          // Join the active layer's group: the insert lands directly above it, so a
+          // group-less new layer would split that group's contiguous run.
+          const layer = inherited ? { ...base, groupId: inherited } : base;
           const at = glyph.layers.findIndex((l) => l.id === s.activeLayerId);
           const insert = at >= 0 ? at + 1 : glyph.layers.length;
           const layers = [
@@ -1093,13 +1224,16 @@ export const useDocumentStore = create<DocumentState>()(
           const at = glyph.layers.findIndex((l) => l.id === layerId);
           if (at < 0) return;
           const layers = glyph.layers.filter((l) => l.id !== layerId);
-          const nextGlyph: Glyph = { ...glyph, layers };
+          let nextGlyph: Glyph = { ...glyph, layers };
           // Drop any boolean pair that referenced the removed layer.
           if (glyph.booleanPairs) {
             nextGlyph.booleanPairs = glyph.booleanPairs.filter(
               (p) => !p.layerIds.includes(layerId),
             );
           }
+          // Drop groups the delete left empty (and any pair that referenced them), so
+          // a dissolved folder can't linger as a phantom row or a stale operand.
+          nextGlyph = pruneEmptyGroups(nextGlyph);
           let activeLayerId = s.activeLayerId;
           if (s.activeLayerId === layerId) {
             activeLayerId = layers[Math.min(at, layers.length - 1)]?.id ?? null;
@@ -1137,10 +1271,13 @@ export const useDocumentStore = create<DocumentState>()(
           const s = get();
           if (!s.activeGlyphId || aLayerId === bLayerId) return;
           const glyph = s.glyphs[s.activeGlyphId];
-          if (!glyph || !findLayer(glyph, aLayerId) || !findLayer(glyph, bLayerId)) {
-            return;
-          }
-          // Exclusivity: drop any existing pair that references either layer,
+          if (!glyph) return;
+          // An operand is a layer OR a whole group (a group renders as one synthetic
+          // layer whose id is the group's, so `buildFillGroups` resolves it the same way).
+          const isOperand = (id: string): boolean => !!findLayer(glyph, id) || !!findGroup(glyph, id);
+          if (!isOperand(aLayerId) || !isOperand(bLayerId)) return;
+
+          // Exclusivity: drop any existing pair that references either operand,
           // then add the new one.
           const kept = (glyph.booleanPairs ?? []).filter(
             (p) => !p.layerIds.includes(aLayerId) && !p.layerIds.includes(bLayerId),
@@ -1151,10 +1288,28 @@ export const useDocumentStore = create<DocumentState>()(
             op,
             ...(op === "blend" && steps != null ? { steps } : {}),
           };
+          // Pairing a group MEANS treating it as one shape, so make sure it actually
+          // renders that way. Without this the group would still emit its members
+          // individually, none of them matching the pair's id — and `buildFillGroups`
+          // (which only resolves pairs whose BOTH members are present) would silently
+          // drop the boolean, leaving the user with an op that appears to do nothing.
+          const operandGroups = new Set(
+            [aLayerId, bLayerId].filter((id) => findGroup(glyph, id)),
+          );
+          const layerGroups = operandGroups.size
+            ? (glyph.layerGroups ?? []).map((g) =>
+                operandGroups.has(g.id) && !g.renderAsOne ? { ...g, renderAsOne: true } : g,
+              )
+            : glyph.layerGroups;
+
           set({
             glyphs: {
               ...s.glyphs,
-              [glyph.id]: { ...glyph, booleanPairs: [...kept, pair] },
+              [glyph.id]: {
+                ...glyph,
+                booleanPairs: [...kept, pair],
+                ...(layerGroups ? { layerGroups } : {}),
+              },
             },
           });
         },
@@ -1190,16 +1345,312 @@ export const useDocumentStore = create<DocumentState>()(
           const kept = glyph.layers.filter((l) => !remove.has(l.id));
           const layers = [...kept.slice(0, below), merged, ...kept.slice(below)];
 
-          const nextGlyph: Glyph = { ...glyph, layers };
+          let nextGlyph: Glyph = { ...glyph, layers };
           if (glyph.booleanPairs) {
             nextGlyph.booleanPairs = glyph.booleanPairs.filter(
               (p) => !p.layerIds.some((id) => remove.has(id)),
             );
           }
+          nextGlyph = pruneEmptyGroups(nextGlyph);
           set({
             glyphs: { ...s.glyphs, [glyph.id]: nextGlyph },
             activeLayerId: merged.id,
             selectedLayerIds: [merged.id],
+          });
+        },
+
+        groupLayers: (layerIds, name) => {
+          const s = get();
+          if (!s.activeGlyphId) return null;
+          const glyph = s.glyphs[s.activeGlyphId];
+          if (!glyph) return null;
+          const wanted = new Set(layerIds);
+          const members = glyph.layers.filter((l) => wanted.has(l.id));
+          if (members.length === 0) return null;
+
+          // What gets re-parented into the new group are UNITS, not raw layers: if a
+          // whole existing group is inside the selection, that GROUP is nested (kept
+          // intact) rather than having its layers re-tagged — otherwise grouping two
+          // groups would silently dissolve both into one flat folder.
+          const selected = new Set(members.map((l) => l.id));
+          const fullyContained = (gid: string): boolean => {
+            const ms = groupMembers(glyph, gid);
+            return ms.length > 0 && ms.every((l) => selected.has(l.id));
+          };
+          // The TOPMOST fully-contained ancestor. Containment is monotone going up (a
+          // child is a subset of its parent), so the last `true` in the chain wins.
+          const unitGroupFor = (gid: string | undefined): string | null => {
+            let best: string | null = null;
+            for (const id of gid ? [gid, ...ancestors(glyph, gid).map((a) => a.id)] : []) {
+              if (!fullyContained(id)) break;
+              best = id;
+            }
+            return best;
+          };
+
+          const unitGroups = new Set<string>();
+          const unitLayers = new Set<string>();
+          for (const l of members) {
+            const unit = unitGroupFor(l.groupId);
+            if (unit) unitGroups.add(unit);
+            else unitLayers.add(l.id);
+          }
+
+          // Nest under the parent every unit already shares; mixed ⇒ top level.
+          const parents = new Set<string | undefined>([
+            ...[...unitGroups].map((id) => findGroup(glyph, id)?.parentId),
+            ...[...unitLayers].map((id) => glyph.layers.find((l) => l.id === id)?.groupId),
+          ]);
+          const parentId = parents.size === 1 ? [...parents][0] : undefined;
+
+          const groupId = createId("grp");
+          const group: LayerGroup = {
+            id: groupId,
+            name: name?.trim() || nextGroupName(glyph),
+            visible: true,
+            locked: false,
+            // New groups render as ONE layer — that is what "group" means here.
+            // Turn it off per group to get a plain organisational folder.
+            renderAsOne: true,
+            ...(parentId ? { parentId } : {}),
+          };
+
+          // CONTIGUITY: pull the members out and reinsert them as one run at the
+          // topmost member's slot, so the group occupies an unbroken range.
+          const memberIds = new Set(members.map((l) => l.id));
+          const rest = glyph.layers.filter((l) => !memberIds.has(l.id));
+          let top = -1;
+          glyph.layers.forEach((l, i) => {
+            if (memberIds.has(l.id)) top = i;
+          });
+          const below = glyph.layers.slice(0, top).filter((l) => !memberIds.has(l.id)).length;
+          // Only layers that are NOT already covered by a nested unit group get re-tagged.
+          const tagged = members.map((l) =>
+            unitLayers.has(l.id) ? { ...l, groupId } : l,
+          );
+          const layers = [...rest.slice(0, below), ...tagged, ...rest.slice(below)];
+
+          // Unit groups keep their own layers; only their parent pointer moves.
+          const layerGroups = [
+            ...(glyph.layerGroups ?? []).map((gr) =>
+              unitGroups.has(gr.id) ? { ...gr, parentId: groupId } : gr,
+            ),
+            group,
+          ];
+
+          set({
+            glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers, layerGroups } },
+          });
+          return groupId;
+        },
+
+        ungroupGroup: (groupId) => {
+          const s = get();
+          if (!s.activeGlyphId) return;
+          const glyph = s.glyphs[s.activeGlyphId];
+          if (!glyph) return;
+          const groups = glyph.layerGroups ?? [];
+          const target = groups.find((g) => g.id === groupId);
+          if (!target) return;
+
+          // Re-parent one level up: direct layers and direct child groups both adopt
+          // the dissolved group's own parent, so an inner group survives intact.
+          const up = target.parentId;
+          const layers = glyph.layers.map((l) => {
+            if (l.groupId !== groupId) return l;
+            const next = { ...l };
+            if (up) next.groupId = up;
+            else delete next.groupId;
+            return next;
+          });
+          const layerGroups = groups
+            .filter((g) => g.id !== groupId)
+            .map((g) => {
+              if (g.parentId !== groupId) return g;
+              const next = { ...g };
+              if (up) next.parentId = up;
+              else delete next.parentId;
+              return next;
+            });
+          // A pair naming the dissolved group would dangle — the group no longer
+          // renders as a single layer, so the op could never resolve.
+          const next = withGroups({ ...glyph, layers }, layerGroups);
+          const pairs = (next.booleanPairs ?? []).filter((p) => !p.layerIds.includes(groupId));
+          const cleaned: Glyph = pairs.length
+            ? { ...next, booleanPairs: pairs }
+            : (() => {
+                const o = { ...next };
+                delete o.booleanPairs;
+                return o;
+              })();
+          set({ glyphs: { ...s.glyphs, [glyph.id]: cleaned } });
+        },
+
+        renameGroup: (groupId, name) =>
+          mutateGroups((groups) =>
+            groups.map((g) => (g.id === groupId ? { ...g, name: name.trim() || g.name } : g)),
+          ),
+
+        setGroupCollapsed: (groupId, collapsed) =>
+          mutateGroups((groups) =>
+            groups.map((g) => (g.id === groupId ? { ...g, collapsed } : g)),
+          ),
+
+        setGroupVisible: (groupId, visible) =>
+          mutateGroups((groups) =>
+            groups.map((g) => (g.id === groupId ? { ...g, visible } : g)),
+          ),
+
+        setGroupLocked: (groupId, locked) =>
+          mutateGroups((groups) =>
+            groups.map((g) => (g.id === groupId ? { ...g, locked } : g)),
+          ),
+
+        setGroupRenderAsOne: (groupId, renderAsOne) =>
+          mutateGroups((groups) =>
+            groups.map((g) => (g.id === groupId ? { ...g, renderAsOne } : g)),
+          ),
+
+        selectGroup: (groupId, additive = false) => {
+          const s = get();
+          const glyph = s.activeGlyphId ? s.glyphs[s.activeGlyphId] : null;
+          if (!glyph) return;
+          const ids = groupMembers(glyph, groupId).map((l) => l.id);
+          if (ids.length === 0) return;
+          const selectedLayerIds = additive
+            ? [...new Set([...s.selectedLayerIds, ...ids])]
+            : ids;
+          // The lowest member becomes active, so new geometry lands inside the group,
+          // and the group itself becomes the target for move/duplicate/delete.
+          set({ selectedLayerIds, activeLayerId: ids[0]!, activeGroupId: groupId });
+        },
+
+        moveGroup: (groupId, direction) => {
+          const s = get();
+          if (!s.activeGlyphId) return;
+          const glyph = s.glyphs[s.activeGlyphId];
+          if (!glyph) return;
+          const range = groupRange(glyph, groupId);
+          const self = findGroup(glyph, groupId);
+          if (!range || !self) return;
+          const [lo, hi] = range;
+
+          // The adjacent item in the move direction must be a SIBLING (same parent);
+          // anything else would mean re-parenting, which needs drag-and-drop.
+          const probe = direction === "up" ? hi + 1 : lo - 1;
+          const neighbour = glyph.layers[probe];
+          if (!neighbour) return;
+          const nGroup = neighbour.groupId ? findGroup(glyph, neighbour.groupId) : undefined;
+          // Resolve the neighbour to the sibling BLOCK it belongs to.
+          let block: [number, number];
+          if (!nGroup) {
+            if ((self.parentId ?? undefined) !== undefined) return; // leaving the parent
+            block = [probe, probe];
+          } else {
+            const sibId = siblingAncestor(glyph, nGroup.id, self.parentId);
+            if (!sibId) return; // the neighbour is outside our parent → no-op
+            const r = groupRange(glyph, sibId);
+            if (!r) return;
+            block = r;
+          }
+
+          const run = glyph.layers.slice(lo, hi + 1);
+          const other = glyph.layers.slice(block[0], block[1] + 1);
+          const head = glyph.layers.slice(0, Math.min(lo, block[0]));
+          const tail = glyph.layers.slice(Math.max(hi, block[1]) + 1);
+          const layers =
+            direction === "up" ? [...head, ...other, ...run, ...tail] : [...head, ...run, ...other, ...tail];
+          set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
+        },
+
+        moveUnitTo: (dragId, targetId, position) => {
+          const s = get();
+          if (!s.activeGlyphId || dragId === targetId) return;
+          const glyph = s.glyphs[s.activeGlyphId];
+          if (!glyph) return;
+
+          // The dragged unit's contiguous layer run: a group's whole range, or the
+          // single layer. Moving it as one block is what keeps groups contiguous.
+          const dragGroup = findGroup(glyph, dragId);
+          let run: [number, number] | null;
+          if (dragGroup) {
+            run = groupRange(glyph, dragId);
+          } else {
+            const at = glyph.layers.findIndex((l) => l.id === dragId);
+            run = at >= 0 ? [at, at] : null;
+          }
+          if (!run) return;
+          const [lo, hi] = run;
+
+          // Refuse a move that would nest a group inside itself or its own descendant.
+          if (dragGroup) {
+            const inside = new Set([dragId, ...descendantGroups(glyph, dragId).map((g) => g.id)]);
+            const targetGroup = findGroup(glyph, targetId);
+            if (targetGroup && inside.has(targetId)) return;
+            const targetLayer = glyph.layers.find((l) => l.id === targetId);
+            if (targetLayer?.groupId && inside.has(targetLayer.groupId)) return;
+          }
+
+          // Where the block lands, and whose child it becomes.
+          let insertAt: number;
+          let newParent: string | undefined;
+          if (position === "inside") {
+            const g = findGroup(glyph, targetId);
+            if (!g) return; // only a group can be dropped INTO
+            const r = groupRange(glyph, targetId);
+            if (!r) return; // an empty group has no slot to drop into
+            insertAt = r[1] + 1; // top of the folder (panel top = high array index)
+            newParent = targetId;
+          } else {
+            const tGroup = findGroup(glyph, targetId);
+            const tRange = tGroup ? groupRange(glyph, targetId) : null;
+            const tAt = tGroup ? null : glyph.layers.findIndex((l) => l.id === targetId);
+            if (tGroup && !tRange) return;
+            if (!tGroup && (tAt == null || tAt < 0)) return;
+            const [tLo, tHi] = tGroup ? tRange! : [tAt!, tAt!];
+            // Panel is top-down while the array is bottom-to-top, so "above" is +1.
+            insertAt = position === "above" ? tHi + 1 : tLo;
+            newParent = tGroup ? tGroup.parentId : glyph.layers[tAt!]!.groupId;
+          }
+          // Dropping onto its own run is a no-op.
+          if (insertAt >= lo && insertAt <= hi + 1 && newParentOf(glyph, dragId) === newParent) {
+            return;
+          }
+
+          const block = glyph.layers.slice(lo, hi + 1);
+          const rest = [...glyph.layers.slice(0, lo), ...glyph.layers.slice(hi + 1)];
+          // Re-index the insertion point now that the block is gone.
+          const at = insertAt > hi ? insertAt - block.length : insertAt;
+
+          // Only the DRAGGED unit's own parent pointer changes; layers inside a dragged
+          // group keep pointing at it.
+          const retagged = dragGroup
+            ? block
+            : block.map((l) => {
+                const next = { ...l };
+                if (newParent) next.groupId = newParent;
+                else delete next.groupId;
+                return next;
+              });
+
+          const layers = [...rest.slice(0, at), ...retagged, ...rest.slice(at)];
+          const layerGroups = dragGroup
+            ? (glyph.layerGroups ?? []).map((g) => {
+                if (g.id !== dragId) return g;
+                const next = { ...g };
+                if (newParent) next.parentId = newParent;
+                else delete next.parentId;
+                return next;
+              })
+            : glyph.layerGroups;
+
+          set({
+            glyphs: {
+              ...s.glyphs,
+              [glyph.id]: pruneEmptyGroups(
+                layerGroups ? { ...glyph, layers, layerGroups } : { ...glyph, layers },
+              ),
+            },
           });
         },
 
@@ -1210,8 +1661,51 @@ export const useDocumentStore = create<DocumentState>()(
           if (!glyph) return;
           const at = glyph.layers.findIndex((l) => l.id === layerId);
           if (at < 0) return;
+          const self = glyph.layers[at]!;
+          const gid = self.groupId;
+
+          // Leaving a group: at the edge of its own group's run, a further step OUT
+          // pops the layer out of the folder instead of dragging an outsider into the
+          // run (which would break CONTIGUITY). Its array position is already correct,
+          // so only the tag changes — one press to leave, another to actually move.
+          if (gid) {
+            const range = groupRange(glyph, gid);
+            if (range) {
+              const atEdge = direction === "up" ? at === range[1] : at === range[0];
+              if (atEdge) {
+                const up = findGroup(glyph, gid)?.parentId;
+                const layers = glyph.layers.map((l) => {
+                  if (l.id !== layerId) return l;
+                  const next = { ...l };
+                  if (up) next.groupId = up;
+                  else delete next.groupId;
+                  return next;
+                });
+                set({
+                  glyphs: {
+                    ...s.glyphs,
+                    [glyph.id]: pruneEmptyGroups({ ...glyph, layers }),
+                  },
+                });
+                return;
+              }
+            }
+          }
+
           // Array order is bottom-to-top, so "up" (toward the top) is +1.
-          const to = direction === "up" ? at + 1 : at - 1;
+          const probe = direction === "up" ? at + 1 : at - 1;
+          const neighbour = glyph.layers[probe];
+          if (!neighbour) return;
+
+          // A neighbour inside a group we are NOT in must be stepped OVER as a whole
+          // block — swapping into it would wedge an outsider inside its run.
+          let to = probe;
+          if (neighbour.groupId && neighbour.groupId !== gid) {
+            const sibId = siblingAncestor(glyph, neighbour.groupId, gid);
+            const r = sibId ? groupRange(glyph, sibId) : null;
+            if (r) to = direction === "up" ? r[1] : r[0];
+          }
+
           const layers = moveInArray(glyph.layers, at, to);
           if (layers === glyph.layers) return;
           set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
@@ -1248,6 +1742,11 @@ export function useActiveLayerId(): string | null {
   return useDocumentStore((s) => s.activeLayerId);
 }
 
+/** The group row the user last clicked, or null when a plain layer is the target. */
+export function useActiveGroupId(): string | null {
+  return useDocumentStore((s) => s.activeGroupId);
+}
+
 /** Ids of the selected layers (always includes the active layer). */
 export function useSelectedLayerIds(): string[] {
   return useDocumentStore((s) => s.selectedLayerIds);
@@ -1261,8 +1760,18 @@ export function useBooleanPairs(): BooleanPair[] {
   });
 }
 
+/** The active glyph's layer groups (empty array when none). A stable empty array so
+ *  an ungrouped document never re-renders on identity churn. */
+export function useLayerGroups(): LayerGroup[] {
+  return useDocumentStore((s) => {
+    const glyph = s.activeGlyphId ? s.glyphs[s.activeGlyphId] : null;
+    return glyph?.layerGroups ?? EMPTY_GROUPS;
+  });
+}
+
 /** Stable empty reference so useBooleanPairs doesn't churn on every render. */
 const EMPTY_PAIRS: BooleanPair[] = [];
+const EMPTY_GROUPS: LayerGroup[] = [];
 
 /** Find the boolean pair a layer belongs to, if any. */
 export function pairForLayer(

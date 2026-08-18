@@ -6,6 +6,7 @@ import { useViewportStore } from "../../../state/viewportStore";
 import { glyphFillGroups } from "../layerFills";
 import { getGeometryService } from "../../../engine/geometry/geometryEngine";
 import type { Glyph } from "../../../types/document";
+import { resolvedLayers } from "../../layers/layerTree";
 
 /**
  * Onion-skinning: the chosen reference glyphs drawn faintly behind the active
@@ -49,7 +50,7 @@ function OnionGlyph({ glyph, renderSvg }: { glyph: Glyph; renderSvg: boolean }) 
   // The true rendered output as a single monochrome silhouette (paint ignored).
   const renderedD = useMemo(() => {
     if (!renderSvg) return null;
-    return glyphFillGroups(glyph, getGeometryService(), mergeHalftones)
+    return glyphFillGroups(glyph, getGeometryService(), { mergeHalftones })
       .map((g) => contoursToPath(g.contours))
       .filter(Boolean)
       .join(" ");
@@ -64,7 +65,7 @@ function OnionGlyph({ glyph, renderSvg }: { glyph: Glyph; renderSvg: boolean }) 
   }
 
   // Raw skeleton: a naive nonzero fill of the closed contours + the outline.
-  const contours = glyph.layers.filter((l) => l.visible).flatMap((l) => l.contours);
+  const contours = resolvedLayers(glyph).filter((l) => l.visible).flatMap((l) => l.contours);
   if (contours.length === 0) return null;
   const fillD = contoursToPath(contours.filter((c) => c.closed));
   return (

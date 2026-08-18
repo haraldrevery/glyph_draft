@@ -13,6 +13,7 @@ import {
 } from "./shared";
 import { dragSnapFn } from "./snapGeometry";
 import type { ToolDefinition, ToolPointerContext } from "./types";
+import { resolvedLayers } from "../layers/layerTree";
 
 /**
  * The Lasso tool: drag a freehand loop to select every node inside it, then drag
@@ -93,7 +94,7 @@ export const lassoTool: ToolDefinition = {
       const grid = vp.grid;
       const snapFn =
         vp.snapToGeometry && ctx.glyph
-          ? dragSnapFn(ctx.glyph.layers.filter((l) => l.visible), ctx.viewport, drag.refs)
+          ? dragSnapFn(resolvedLayers(ctx.glyph).filter((l) => l.visible), ctx.viewport, drag.refs)
           : undefined;
       const lead = leadPoint(drag.origin, drag.lead);
       const d: Vec2 = lead

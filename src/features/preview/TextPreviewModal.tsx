@@ -80,7 +80,7 @@ export function TextPreviewModal({ open, onClose }: Props) {
     const geom = getGeometryService();
     const m = new Map<string, FillGroup[]>();
     for (const item of layout.items) {
-      if (!m.has(item.glyph.id)) m.set(item.glyph.id, glyphFillGroups(item.glyph, geom, mergeHalftones));
+      if (!m.has(item.glyph.id)) m.set(item.glyph.id, glyphFillGroups(item.glyph, geom, { mergeHalftones }));
     }
     return m;
   }, [layout, mergeHalftones]);

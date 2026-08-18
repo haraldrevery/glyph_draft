@@ -41,7 +41,9 @@ npm install
 npm run dev          # web — http://localhost:5173
 npm run typecheck    # tsc --noEmit (strict, must stay clean)
 npm test             # vitest run — pure-engine unit tests (must stay green)
-npm run build        # production web build
+npm run test:watch   # vitest in watch mode (what you want while doing geometry work)
+npm run build        # production web build — runs `tsc --noEmit` FIRST, so it subsumes typecheck
+npm run preview      # serve the built dist/ locally
 npm run tauri dev    # desktop (requires Rust toolchain + Tauri prerequisites)
 ```
 
@@ -59,10 +61,21 @@ module.
 
 These are the cheapest possible regression guard: deterministic, no DOM, no
 mocks. **Before claiming a geometry change works, run `npm test`** — do not assert
-verification narratively. The React-free **glue** is also covered now
-(`clipboardActions.test.ts`, `mergeLayers.test.ts`, `documentStore.test.ts`,
-`registry.test.ts` — all via `getState`, Paper headless where needed); only the
-React components themselves (overlays, modals, panels) remain verified in-app.
+verification narratively.
+
+**The suite is much wider than the two paragraphs above imply — 46 files / 433 tests.**
+Beyond the engine modules named there it also covers `affine`, `align`, `blend`, `corners`,
+`freehand`, `nodeHandles`, `polygon`, `profile`, `svgPath`, `topology`, and the big one,
+`strokeOutline.test.ts` (67 tests, ~70% of the runtime — the guard on the riskiest file).
+The React-free **glue** is covered too — `clipboardActions`, `mergeLayers`, `documentStore`,
+`editActions`, `expandStroke`, `layerFills`, `fillPaint`, `glyphToSvg`, `styleTransform`,
+`svgImport`, `textLayout`, `projectActions`, `glyphHelpers`, `history`, `registry`, the
+tool helpers (`hitTest`, `select`, `pen`, `shapes`, `lasso`, `shared`, `snapGeometry`), the
+stores (`colorPaletteStore`, `strokePresetStore`), and both persisted formats
+(`projectFile`, `settingsFile`) — all via `getState`, Paper headless where needed. Even one
+control has a pure test (`Slider.test.ts` → `clampToStep`). **So: assume a module you are
+about to change already has a test, and check before adding a new file.** Only the React
+components themselves (overlays, modals, panels) remain verified in-app.
 
 ## Verifying export (FontForge round-trip)
 
@@ -78,8 +91,14 @@ touching `glyphToSvg`/`buildFillGroups`/winding:
 
 ## Source Structure
 
+> Kept in sync with the real tree; if you add a file, add it here. Test files (`*.test.ts`,
+> colocated next to their module) are omitted for brevity — there are 46 of them.
+
 ```
 src/
+  main.tsx                       # React 18 entry (wraps <App/> in ErrorBoundary)
+  App.tsx                        # Shell: menu bar, modals, theme/accent sync, global key handler mount
+  vite-env.d.ts                  # Types the `?raw` Markdown imports as string
   engine/                        # Framework-free, pure domain logic
     viewport/transform.ts        # THE ONLY place the world↔screen Y-flip lives
     snapping/snap.ts             # Pure snap-to-grid (world units)
@@ -98,15 +117,30 @@ src/
       align.ts                   # Pure align/distribute math (contourBounds + alignDeltas) for the Align panel
       winding.ts                 # Winding detection and correction (nesting-depth based)
       freehand.ts                # Pure freehand fit: simplifyRDP + fitFreehand (Catmull-Rom handles, corner/close detection) for the pencil tool
+      profile.ts                 # Pure monotone-cubic profile evaluator (evalProfile) — drives the width/nib-angle graphs
+      blend.ts                   # Pure A→B shape morph (blendContours) — the Phase-M 5th pair op
+      nodeHandles.ts             # Pure node-continuity conversion (convertPoint): smooth / cusp / corner
       corners.ts                 # Pure per-path corner pre-pass: roundCorners (round/chamfer/invertedRound, clamped) — non-destructive, run in renderContours before stroke-expand/export
   state/
     viewportStore.ts             # Zoom/pan/grid/theme — NOT undoable
-    documentStore.ts             # Glyphs/layers — plain store; undo/redo is per-glyph (see history.ts)
+    documentStore.ts             # Glyphs/layers — plain store; undo/redo is per-glyph (see history.ts).
+                                 #   Per-contour STYLE actions all go through ONE `patchContours(ids, fn)`
+                                 #   closure helper (cross-layer, skips locked, one undo step) — add the
+                                 #   next style field there, don't re-copy the traversal
     history.ts                   # PER-GLYPH undo/redo (Map<glyphId,{past,future}>, limit 200) — useHistoryStore/useHistory; structural glyph add/delete not recorded
     editorStore.ts               # Live ephemeral state (pen in-progress, drag) — NOT undoable
     clipboardStore.ts            # Clipboard — survives undo and tool switches
     onionStore.ts                # Onion-skin state — NOT undoable
-    glyphHelpers.ts              # createGlyph, glyphLabel, parseGlyphInput, exportFileName
+    keybindingStore.ts           # User shortcut overrides (effectiveKeys) — persisted (settings v2+)
+    strokePresetStore.ts         # User-saved StrokePresets — persisted (settings v3+)
+    colorPaletteStore.ts         # User-saved named colour palettes — persisted (settings v5+)
+    paletteStore.ts              # Session-only RECENT colours (NOT persisted)
+    panelStore.ts                # Session-only floating-panel positions (PanelId = stroke/fill/layers)
+    glyphHelpers.ts              # createGlyph, glyphLabel, parseGlyphInput, exportFileName +
+                                 #   cloneContourWithNewIds / cloneLayer — ⚠ these rebuild objects
+                                 #   FIELD-BY-FIELD, so a new optional Contour/Layer field must be
+                                 #   added there too (omitting one compiles clean; that is how
+                                 #   paint/filled/corner/baked were once silently dropped on paste)
     persistence.ts               # Document: load-on-launch + debounced autosave + saveNow + useSaveStatus
     settings.ts                  # Preferences: load-on-launch + debounced autosave (separate KV key)
   storage/
@@ -127,6 +161,8 @@ src/
       useEditTargets.ts          # Shared hook: the target contours (selected-anchor paths across unlocked layers, else active layer) used by BOTH StrokePanel and FillPanel
       GraphEditor.tsx            # SVG control-point editor for the width/nib-angle profiles
       Toolbar.tsx
+      brushPresets.ts            # Read-only BUILT-IN brushes (sibling of the user strokePresetStore)
+      usePanelDrag.ts            # Drag/resize for the floating HUD panels (over panelStore)
       layerFills.ts              # buildFillGroups (active glyph, live) + glyphFillGroups (per-glyph, cached) — strokes + booleans + group-by-PAINT → live results (non-destructive); boolean-pair result inherits operand A's/B's paint (firstPaint)
       fillPaint.ts               # Pure linearGradientSpec(group) — turns Paint.gradient into {id,transform,stops} for the canvas/preview/export renderers (objectBoundingBox; Y-flip-aware; DOM-safe id)
       editActions.ts             # React-free nudge/flip/reverse + move-to-layer, merge-endpoints, align — over the node selection (one undo step)
@@ -136,7 +172,8 @@ src/
       components/                # Grid, EmSquare, MetricGuides, MetricLabels,
                                  # SnapIndicator, CoordinateReadout, EditOverlay,
                                  # GlyphView, OnionSkin, PreviewLayer, LassoOverlay,
-                                 # MarqueeOverlay, TransformBox, AlignPanel
+                                 # MarqueeOverlay, TransformBox, AlignPanel,
+                                 # EraserCursor, UnitReference
     tools/                       # Tool definitions (no React, no DOM)
       pen.ts                     # Bezier pen — Illustrator-style
       freepen.ts                 # Free-pen (pencil) — freehand draw → simplified smooth bezier (reuses freehand.ts + the shapes draft→commit gesture)
@@ -149,6 +186,8 @@ src/
       types.ts                   # ToolDefinition interface
       hitTest.ts                 # Hit testing (layer-scoped) + hitEndpoint
       shared.ts                  # Shared node-tool helpers (anchor-delta, selected-layer scope, refsInPolygon)
+      snapGeometry.ts            # Pure "Snap to point" resolver (nearestAnchor → nearestPointOnContours)
+      index.ts                   # The TOOLS registry — drives toolbar + shortcuts + routing
     layers/                      # LayersPanel, LayerRow, mergeLayers (destructive flatten),
                                  #   layerColors (auto per-layer editing palette)
     glyphs/                      # GlyphSidebar (resizable: right-edge drag handle → viewportStore.sidebarWidth; drag left to collapse to a re-open grip; "Reset view" restores 212px/expanded), GlyphCell, GlyphThumbnail, glyphSets (set templates)
@@ -164,7 +203,8 @@ src/
       ExportService.ts          # Platform seam + createExportService() factory
       WebExportService.ts       # Web impl: fflate zip + browser download
       TauriExportService.ts     # Desktop impl: folder picker + FS write (lazy)
-      ExportModal.tsx           # Scale-% + synthetic-style modal (opened from File → Export…)
+      exportNaming.ts           # Pure archive-name resolver (basename + sanitise; blank ⇒ auto name)
+      ExportModal.tsx           # Scale-% + synthetic-style + archive-name modal (File → Export…)
     import/                      # SVG import — drops imported art on a new (baked) layer
       svgImport.ts              # DOM walk → flatten transforms + Y-flip + fill→paint + correctWinding → Contour[]
     preview/                     # Text-preview window: type a string, see it in the glyphs
@@ -175,17 +215,23 @@ src/
       WebProjectIO.ts           # Web impl: Blob download + hidden file-input
       TauriProjectIO.ts         # Desktop impl: save/open dialog + FS (lazy, code-split). ⚠️ Desktop dialogs/FS need the Rust side wired: `src-tauri/Cargo.toml` + `lib.rs` register BOTH `tauri-plugin-fs` AND `tauri-plugin-dialog`, and `capabilities/default.json` grants `dialog:default` + BROAD `fs:allow-read/write-text-file` (`**`/`$HOME/**`) for user-PICKED files (project .glphdrft anywhere, SVG export folder) — distinct from the `$APPDATA/**`-scoped FS the autosave StorageService uses. (The dialog plugin was missing → import/export/SVG-export silently failed on desktop.)
       projectActions.ts         # serialize / applyImportedProject (reuses projectFile envelope + migrate)
+    info/                        # Information top-bar menu
+      InfoModal.tsx             # About / Licence / Legal / User guide in ONE modal with a sidebar;
+                                 #   renders src/content/*.md (imported ?raw) via `marked`
   commands/                      # Command registry — the single source of actions + keybinds
     types.ts                     # Command, KeyChord
     registry.ts                  # COMMANDS[], matchKey(), commandMenuItems()
     useCommandKeys.ts            # The ONE global keyboard entry point
   components/
-    controls/                    # Toggle, Slider, NumberInput, Knob (rotary angle picker)
-    menu/                        # MenuBar, Menu, MenuItem (header) + ContextMenu (right-click, supports nested submenus — the open submenu is PORTALED to <body> at fixed coords so it escapes the list's vertical scroll container; an in-place left:100% flyout otherwise just made the menu scroll horizontally. The outside-pointerdown close-handler ignores clicks inside `.context-menu-root` OR a portaled `.context-menu-submenu` — else a submenu click closed the menu before its onSelect ran, e.g. "Move to layer" appeared to do nothing)
+    controls/                    # Toggle, Slider, NumberInput, Knob (rotary angle picker), CollapseButton
+    menu/                        # MenuBar, Menu, MenuItem, SubMenu (nested flyout: Settings → Theme) + ContextMenu (right-click, supports nested submenus — the open submenu is PORTALED to <body> at fixed coords so it escapes the list's vertical scroll container; an in-place left:100% flyout otherwise just made the menu scroll horizontally. The outside-pointerdown close-handler ignores clicks inside `.context-menu-root` OR a portaled `.context-menu-submenu` — else a submenu click closed the menu before its onSelect ran, e.g. "Move to layer" appeared to do nothing)
     SaveStatus.tsx               # Header autosave indicator (reads useSaveStatus)
     ErrorBoundary.tsx            # Root render-error boundary (wraps <App/> in main.tsx) — shows a reload panel instead of a white screen; work is autosaved
+  content/                       # Bundled Markdown for the Info modal (about/licence/legal/user-guide)
+                                 #   — imported `?raw` (see vite-env.d.ts), rendered with `marked`
   utils/
     dom.ts                       # isEditable() — shared "is a text field focused?" guard
+    id.ts                        # createId() — the id factory used across the geometry/state layers
   types/                         # document.ts, geometry.ts, viewport.ts
   constants/metrics.ts           # FontMetrics, DEFAULT_METRICS, emBox()
   styles/theme.css               # CSS-variable themes (dark/light/paper; "EDIT THEME COLOURS HERE" anchor); accent derives --accent-strong/-soft via color-mix so the Settings accent-colour override (App.tsx sets --accent inline on <html>) recolours everything
@@ -304,7 +350,7 @@ src/
 ### 5. Layer Paint Order & Two-Layer Booleans (Pathfinder)
 - `layers[]` array = **bottom-to-top paint order** (index 0 paints first); LayersPanel renders it reversed (Illustrator convention).
 - Fill is built by `buildFillGroups` (`features/canvas/layerFills.ts`), not inline in the view. Each **unpaired** layer becomes one nonzero-fill compound `<path>`, all its contours forced CW → **solid union** (no within-layer holes).
-- **The non-destructive Pathfinder is the sanctioned cross-layer combine.** A `Glyph.booleanPair` joins **exactly two** layers with an op (`union`/`subtract`/`intersect`/`exclude`, or `blend` — the A→B morph echo, Phase M). At RENDER and EXPORT time (**never** in the data) `buildFillGroups` calls the geometry service on the two layers — **upper = operand A, lower = B** (Subtract = A − B) — emits one result group at the lower layer's paint position (inheriting A's paint, else B's), and suppresses both operands' own fills. Both layers stay separate and editable; moving either updates the result live. **Curves preserved** (Paper.js). A layer is in **at most one** pair (no entangled ops).
+- **The non-destructive Pathfinder is the sanctioned cross-layer combine.** An entry in `Glyph.booleanPairs` (a `BooleanPair`) joins **exactly two** layers with an op (`union`/`subtract`/`intersect`/`exclude`, or `blend` — the A→B morph echo, Phase M). At RENDER and EXPORT time (**never** in the data) `buildFillGroups` calls the geometry service on the two layers — **upper = operand A, lower = B** (Subtract = A − B) — emits one result group at the lower layer's paint position (inheriting A's paint, else B's), and suppresses both operands' own fills. Both layers stay separate and editable; moving either updates the result live. **Curves preserved** (Paper.js). A layer is in **at most one** pair (no entangled ops).
 - So fill is per-layer **except** for an explicit boolean pair. Do **not** make ordinary layers' fills interact; only paired layers combine, and only through `buildFillGroups` (which Phase 6 export reuses via `glyphToSvg`, so the exported SVG carries the same results).
 - Each operand layer is unioned ("fully rendered") before the op, so multi-contour layers don't glitch. Unlike the old cutter, a Subtract pair is a true boolean, so a B that **crosses** A's edge clips correctly (no overhang caveat).
 
@@ -412,7 +458,7 @@ A live, **curve-exact**, **non-destructive** boolean between **exactly two layer
 - **Engine:** `PaperGeometryService` (Paper.js) — curve-exact. Each operand layer is unioned ("fully rendered") before the op so complex layers don't glitch.
 
 **Carried over / still here:**
-- `PolygonGeometryService` (`engine/geometry/clip.ts`) stays behind `GeometryService` for the **DOM-free unit tests** (injected directly); the live seam points at Paper.
+- `PolygonGeometryService` (`engine/geometry/PolygonGeometryService.ts`, built on the `clip.ts` planar-arrangement clipper) stays behind `GeometryService` for the **DOM-free unit tests** (injected directly); the live seam points at Paper.
 - Layer multi-select (`selectedLayerIds`, Ctrl/Cmd+click — now the Pathfinder's operand picker) and cross-layer anchor selection (`PointRef.layerId`, see 5a) remain.
 
 **Notes / caveats:**
@@ -443,6 +489,12 @@ lazy-loaded); web downloads a single zip (`fflate`).
 
 **Phase 7 — Non-Destructive Per-Path Strokes**
 
+> ⚠️ **SUPERSEDED IN PART — read "Strokes — current state" (below) FIRST.** The paragraph that
+> follows is the Phase-7 *historical* record. The serif, drop, brush and cap specifics have all
+> evolved past it (drop is an ink-pool, not a bolted-on bulb; serif is built into the sampled
+> outline; the brush/halftone/dash models and the A/B cap variants arrived later). Trust the
+> current-state block wherever the two disagree.
+
 A path keeps its editable centerline; an optional `Contour.stroke` (`StrokeStyle`)
 is expanded to a filled outline at render/export. `StrokePanel` edits it per
 selected path. Kinds: **uniform** (a SWEPT round-brush outline — `sweptUniform`:
@@ -456,8 +508,7 @@ the parametric **rectangle** cap (`RectCapStyle`). Expansion lives in
 (self-union) so sharp curves don't punch a spurious "exclude" hole. The swept model
 flattens curves (denser output) but is glitch-proof and gives a clean butt edge ⟂
 the terminal tangent. Reused by `buildFillGroups` → canvas, thumbnails, export.
-Tested in `strokeOutline.test.ts`. **See the "Strokes — current state" block below; the
-serif/drop/brush specifics evolved past this paragraph.**
+Tested in `strokeOutline.test.ts`.
 
 **Cap/serif hardening (additive — see the stroke types in `types/geometry.ts`):**
 - **`rectangle` cap** replaced the old fixed `square`. Its FAR edge sits ON the node
@@ -563,10 +614,12 @@ serif/drop/brush specifics evolved past this paragraph.**
     region (body-distance falloff) so abutting paths read as one tone with no seam. The flag threads
     through `buildFillGroups`/`glyphFillGroups` (cache keyed by it) to canvas/thumbnail/preview/export/merge;
     lone or differing-style halftones are unchanged. The single-path `halftoneStroke` is untouched.
-    **Debt-smart note:** `mergeHalftones` is the FIRST render-affecting global flag threaded as a
-    positional param through `buildFillGroups`/`glyphFillGroups`. If a SECOND such flag is ever needed,
-    switch these to a single `RenderOptions` object (and key the cache on it) rather than adding another
-    positional boolean — one flag is fine, two would make the signatures noisy.
+    **Render switches travel as a `RenderOptions` object** (`layerFills.ts`), threaded
+    `glyphToSvg` → `glyphFillGroups` → `buildFillGroups` → `renderContours`; the export adds its own
+    knobs via `GlyphSvgOptions extends RenderOptions`. Adding a new global render switch = a field on
+    that interface plus a case in `renderKey` (which keys the per-options glyph cache) — **never**
+    another positional boolean. This replaced positional flags after `glyphToSvg` reached six params
+    ending in two adjacent booleans (`mergeHalftones`, `silhouette`), where a swap type-checks silently.
 - **Terminal-handle cap angle** (the deferred Stage-5 feature, now shipped): the first
   node's `handleIn` / last node's `handleOut` are read as the cap **axis** — butt caps
   re-cut along it (`angledTerminal`), rectangle/serif take it as their `angle` when no
@@ -664,7 +717,7 @@ shipped later — Phase M.)
   relative to the selection bbox). Applied via `editActions.alignSelectedPaths` →
   `replaceContoursEverywhere` (one undo step).
 - **Fill paint (the colour seam):** optional `Contour.paint` (see Invariant 4's paint bullet
-  + the `setContourPaint` action + the StrokePanel "Fill" section). The chosen foundation
+  + the `setContourPaint` action + the **Color panel** `FillPanel.tsx`). The chosen foundation
   that makes SVG import / richer colour cheap later.
 
 **Phase H — SVG import**
@@ -802,48 +855,124 @@ consume the extra groups.
 
 ### Future seams (deferred wishlist — keep these cheap, build only on demand)
 
-**The artist wishlist is essentially complete.** Only a handful of items are genuinely open, listed
-below **ranked by entanglement** (how many subsystems each couples = future-debt risk). The debt-smart
-rule: every new feature lands ON an existing seam, model fields stay **optional + migration-guarded**,
-and the Tier-2/3 seams below stay DOCUMENTED intentions — **built only when an artist actually asks
-(YAGNI), never pre-built.** The genuinely-open items are: **per-NODE corners**, **cap designer**, and
-**dynamic alignment "smart guides"** (Tier 1, ride existing seams); **procedural/L-system brushes**
-(Tier 2 — isolated as a new `model` but perf-heavy/experimental); **i18n/language** (Tier 3 —
-cross-cutting, defer hard). Everything else below is marked Shipped and kept for the design rationale.
+**The artist wishlist is essentially complete.** Only a handful of items are genuinely open.
+
+> ⚠️ **THE TIER LIST BELOW IS THE SINGLE SOURCE OF TRUTH for how entangled an open item is and
+> whether to build it.** Do not restate a tier number anywhere else in this document — the
+> "Not Yet Implemented" list and the Known-Gaps table deliberately carry **no** tier numbers and
+> just point here. (They used to disagree: every open item carried two or three different tiers,
+> so "should I build the cap designer?" got opposite answers from the same file.)
+
+The debt-smart rule: every new feature lands ON an existing seam, model fields stay **optional +
+migration-guarded**, and **Tier 2, 3 and 4 seams stay DOCUMENTED intentions — built only when an
+artist actually asks (YAGNI), never pre-built.** Tier 1 is the only "safe anytime" tier.
+
+**The five genuinely-open items, in build order** (each appears in its tier bullet below):
+smart guides (T1) → cap designer (T1) → procedural/L-system brushes (T2) → per-NODE corners (T3)
+→ i18n (T4). Everything else below is marked Shipped and kept for the design rationale.
 
 - **Tier 1 — isolated, rides an existing seam (safe anytime):**
-  - **Colour picker UI** → the `Contour.paint` seam (`setContourPaint` / StrokePanel `applyPaint`). Pure UI. **(Now shipped — richer Fill palette: presets + recent + hex, over the existing native swatch.)**
+  - **Colour picker UI** → the `Contour.paint` seam (`setContourPaint` / `applyPaint`, both in the **Color panel** `FillPanel.tsx` — NOT StrokePanel, which is shape-only). Pure UI. **(Now shipped — richer Fill palette: presets + recent + hex, over the existing native swatch.)**
   - **Rotate around a marked point** → **Shipped** — a draggable **pivot** on the Transform box (Ctrl+T): the rotate handle rotates the selection around the marked pivot (default = box center; double-click the pivot resets it), reusing `affine.rotateAbout`. Implemented as a transform-box pivot, NOT a separate tool — a standalone Rotate tool was rejected because switching tools clears the selection (Invariant: `setTool` resets selection), which would wipe what you mean to rotate.
+  - **OPEN — Dynamic alignment "smart guides"** (live alignment lines while dragging). The least
+    entangled open item: it touches **no document model at all**, so there is no migration and no
+    render fan-out. Every seam exists — `dragDelta` (`tools/shared.ts`) already takes an **injected
+    `snap` strategy** (`snapGeometry.ts`'s `dragSnapFn` is the precedent); `editorStore` already
+    holds ephemeral gesture visuals (`lasso`, `marquee`) cleared in `setTool`/`resetEphemeral`;
+    `components/MarqueeOverlay.tsx` (21 lines) is the overlay template; and `align.ts`
+    `contourBounds` supplies the bbox math. Two notes: widen `GeomSnap` first (it currently discards
+    the `ref` of what you snapped to, and a guide must know what it aligned to), and snapshot the
+    static bboxes at pointer-DOWN rather than recomputing per move. Ship the toggle session-only
+    (like `snapToGeometry`) to avoid a settings migration.
+  - **OPEN — Cap designer** (user-drawn custom serif/teardrop cap shapes). `withCap` in
+    `PaperGeometryService.ts` is a clean dispatch point — a `cap === "custom"` branch is ~6 lines and
+    inherits the per-end wiring, the terminal cap-angle handle, and the node/outward anchor
+    convention for free. Reuse the pattern machinery **verbatim**: `svgImport.normalizePattern`
+    (normalizes a `Contour[]` to a unit box), `halftonePatternPath` (caches the Paper compound —
+    already reused by BOTH halftone and dash, so a third caller is proven safe), and `footAxis` for
+    orientation; `rectCap` is the reference implementation. The StrokePanel "Import SVG…" flow
+    already exists twice and can be extracted to a shared hook.
+    ⚠️ **Design limit:** serif and drop-B are **not shapes** — they are per-position width fields
+    folded into `sampledOutline`, which is exactly what makes them seamless with the stem. A
+    user-supplied `Contour[]` can only ever be a **unioned** cap, so it will show a union boundary
+    on a tapered/profiled stroke. Scope custom caps to uniform-width terminals.
 - **Tier 2 — additive, touches ONE pipeline (behind a reserved seam):**
   - **Stroke decorators** (dashed/dotted/**custom-SVG-along-line**) → **Shipped** as an isolated **`model: "dash"`** brush (a top-level early return in `expandStroke`, like halftone — see "Strokes — current state"). This proved SAFER than the earlier "decorator post-pass" idea (a new model can't touch the offset/brush/serif code at all). Still deferred: simple dash/pattern decorators on the *existing* offset/brush models (vs. the dash model replacing the ribbon).
-  - **Cap designer** (custom serif/teardrop shapes): a custom-cap-shape type fed into the cap stage; reuses the cap A/B variant machinery.
+  - **OPEN — Procedural / L-system brushes** (growing branches, voronoi fracture, reaction-diffusion
+    along the path). Structurally this is the SAFEST of the open items — a 5th `StrokeStyle.model`
+    added as another **top-level early return** in `expandStroke` (beside `halftone`/`dash`), so the
+    offset/brush/serif/drop/profile machinery is literally unreachable for it and cannot regress.
+    Only ~4 files change (type union + style interface + default, the engine function, the
+    StrokePanel block, tests). Honour the two conventions the other two models established:
+    `solidify` (self-union) the elements **before** `normalize`, or nesting-based `correctWinding`
+    mislabels overlapping branches as holes (an XOR artifact already hit and fixed once in dash);
+    and add a graceful **element cap** like `HALFTONE_MAX_CELLS`/`MAX_DASH_ELEMENTS` that degrades
+    resolution rather than freezing. Two risks the other models don't have: element count is
+    **exponential** in L-system depth (cap depth AND total elements, counting as you grow), and any
+    randomness **must store its seed** in the style — otherwise canvas, thumbnail, preview and
+    export each compute a different shape, masked intermittently by the `expandStroke` WeakMap.
+    Note `PolygonGeometryService.expandStroke` ignores `model`, so headless tests can't cover it.
 - **Tier 3 — model + multi-pipeline fan-out (design the additive seam first):**
-  - **Rounded corners (general):** **Shipped** — a per-contour `Contour.corner?` (round/chamfer/inverted) + the pure render-time pre-pass `engine/geometry/corners.ts` `roundCorners` plugged into `renderContours` (before stroke-expand/booleans/export). Per-NODE corners (select individual anchors) remain a future extension on the same engine.
+  - **Rounded corners (general):** **Shipped** — a per-contour `Contour.corner?` (round/chamfer/inverted) + the pure render-time pre-pass `engine/geometry/corners.ts` `roundCorners` plugged into `renderContours` (before stroke-expand/booleans/export).
+  - **OPEN — Per-NODE corners** (`AnchorPoint.corner?`, selecting individual anchors). **Deceptive:
+    the engine is ~1 line, the plumbing is ~12 files.** `roundOne(P, prev, next, style)` is already
+    pure per-corner with the radius already clamped against *that* corner's own two edges and no
+    cross-corner state, so the engine change is just `roundOne(P, prev, next, P.corner ?? style)`
+    plus a nullable path style.
+    ⚠️ **The real cost: `AnchorPoint` is rebuilt FIELD-BY-FIELD in six places, and each would
+    silently drop a new optional field — dropping one COMPILES CLEAN, so typecheck cannot catch it.**
+    The six: `tools/shared.ts` `translatePoint` (**every node drag** + nudge), `affine.ts`
+    `transformAnchor` (transform box, align, SVG import, bold/italic export), `topology.ts`
+    `clonePoint` (split/join, scissors, knife, eraser) and its `reverseContour`, `path.ts`
+    `reverseContour` (**inside `ensureWinding`, so every filled contour**), and `glyphHelpers.ts`
+    `cloneContourWithNewIds` (copy/paste, duplicate — this one already lost `paint`/`filled`/
+    `corner` in production before it was fixed; treat it as the proof that this rake is real).
+    Also needed: both per-path gates in `layerFills.ts` must additionally test for per-node
+    overrides, a `PointRef[]`-keyed store action beside `setContourCorner`, and a mixed-state UI
+    decision (the Corners section is per-PATH via `useEditTargets`, while node selection lives in
+    `editorStore.selection` — Invariant 5a keeps them decoupled). Add a test per rebuild site.
   - **Custom-SVG-on-line decorator:** **Shipped** — the dash `model:"svg"` imports an SVG and tiles it
     along the line (scaled + rotated to the tangent; `DashStyle.pattern`). The ONLY open remnant is the
     niche "decorate the *existing* offset/brush ribbon" (vs. the dash model replacing it) — low value,
     deferred (see the Tier-2 note).
 - **Tier 4 — genuinely cross-cutting; defer deliberately:**
   - **Blend/echo between layers** → **Shipped** as the 5th pair op on the `Glyph.booleanPairs` seam — see Phase M. Handles outlined/multi-path/coloured/corner layers and morphs genuinely different shapes (arc-length resampling + cyclic alignment; different path counts collapse to a point). Only remaining caveat: resampled in-between steps are polyline approximations (not editable béziers), and A↔B colour isn't interpolated.
-  - **Procedural/L-system brushes** (perf-heavy, experimental) and **i18n / language** (touches every user-facing string — a "massive rewrite").
+  - **OPEN — i18n / language.** The most entangled item; defer hard. ~350-400 distinct user-facing
+    strings and **zero** infrastructure (no library, no `t()`, no string-constant module, no
+    extraction tooling or lint rule). The shape is friendlier than "massive rewrite" suggests —
+    **26 of 46 `.tsx` files have no user-facing strings at all** (every `components/` overlay is
+    pure SVG), and seven files hold well over half: `StrokePanel`, `FillPanel`, `App`, `ViewMenu`,
+    `GlyphSidebar`, `ExportModal`, and `commands/registry.ts` (22 command labels in one array,
+    already the single source for menus + right-click + the keybinding editor — the natural first
+    conversion). Three things are easy to overlook: ~46 **template-literal** labels
+    (`` `Width · ${n} u` ``) need interpolation-aware messages, not key lookup; `src/content/*.md`
+    (~460 words, imported `?raw`) localizes per-FILE and `?raw` resolves at build time, so a locale
+    switch needs `import.meta.glob` or bundling every language; and numbers/units would need
+    `Intl.NumberFormat`. Settings would take one additive `language?` field (**settings v8**) —
+    `settingsFile.ts` already names this exact case. **The real debt is not the conversion but the
+    ongoing discipline** with no lint rule to enforce it.
 
 (Free-hand pen — Phase J; **scissors/knife/eraser** — Phase K/L, on
 `splitContourAtPoints`/`lineCrossings`/`nearestPointOnContours`.)
 
 ### Not Yet Implemented
 
-The wishlist is essentially complete; only these remain open (see "Future seams" for the entanglement
-ranking and the build-on-demand rule):
-- **Cap designer** (custom serif/teardrop cap shapes) — Tier 1, rides the cap A/B `variant` machinery.
-- **Per-NODE corners** (select individual anchors) — Tier 1, an extension of `engine/geometry/corners.ts`
+The wishlist is essentially complete; only these remain open. **This list carries no tier numbers
+and no entanglement claims on purpose** — "Future seams" above is the single source for both, and
+for whether an item is safe to build yet. In build order:
+- **Dynamic alignment "smart guides"** (live alignment lines while dragging) — a drag-time overlay
+  (static "Snap to point" + the Align panel are already shipped).
+- **Cap designer** (custom serif/teardrop cap shapes) — a custom shape unioned in the cap stage.
+- **Procedural / L-system brushes** (perf-heavy, experimental) — a new `StrokeStyle.model`
+  early-return, like `halftone`/`dash`.
+- **Per-NODE corners** (select individual anchors) — an extension of `engine/geometry/corners.ts`
   (per-*path* `Contour.corner` is shipped).
-- **Dynamic alignment "smart guides"** (live alignment lines while dragging) — Tier 1, an isolated drag-time
-  overlay (static "Snap to point" + the Align panel are already shipped).
-- **Procedural / L-system brushes** (perf-heavy, experimental) — Tier 2, would be a new `StrokeStyle.model`
-  early-return (like `halftone`/`dash`).
-- **i18n / language** — Tier 3, cross-cutting (every user-facing string); deferred deliberately.
+- **i18n / language** — cross-cutting (every user-facing string); deferred deliberately.
 - (Niche) **decorators on the existing offset/brush ribbon** — low value now that `model:"dash"` ships
-  dashes/dots/custom-SVG-along-line.
+  dashes/dots/custom-SVG-along-line. If ever built, make it a `model` (a 6th early return that calls
+  the existing `sweptUniform`/`sampledOutline` helpers) rather than an inline post-pass — a post-pass
+  is the design already rejected once, and it would reach into the serif/drop code the A/B `variant`
+  system was built to protect.
 
 (Everything else from the wishlist is shipped — strokes/serifs/caps/profiles, the two-layer Pathfinder +
 **blend**, booleans/winding, layers/lock/onion, glyph sidebar, clipboard paste-in-place,
@@ -886,11 +1015,23 @@ dark/light/paper themes.)
 | Transform box (Ctrl+T) | **Shipped** — scale/rotate/move handles over the node selection; affine applied across layers, one undo step. A draggable **pivot** marks the point to **rotate around** (default = box center; double-click resets) — covers wishlist "rotate around the center or a marked point" |
 | Flatten / merge layers (destructive) | **Shipped** — Phase F; right-click → Merge N layers bakes strokes + booleans into one `baked` layer |
 | Expand stroke (centerline+`stroke` → editable outline) | **Shipped** — Phase I; right-click → Expand stroke (`edit.expandStroke`) bakes the selected path's `expandStroke` output onto a new `baked` layer (holes preserved), consuming the original, one undo step |
-| Movable / floating panels | **Shipped** — View/Stroke/**Fill**/Layers HUD panels drag by their header + resize by the left edge (`usePanelDrag` + session-only `panelStore`, `PanelId` = view/stroke/fill/layers), clamped to the canvas; a moved panel detaches to a fixed position |
+| Movable / floating panels | **Shipped** — Stroke/**Color**/Layers HUD panels drag by their header + resize by the left edge (`usePanelDrag` + session-only `panelStore`, `PanelId` = stroke/fill/layers), clamped to the canvas; a moved panel detaches to a fixed position. **There is no draggable View panel** — the old floating ControlPanel became the top-bar View *menu* (`ViewMenu.tsx`) |
 | Path corner styles (Illustrator Round/Chamfer/Inverted) | **Shipped** — per-path `Contour.corner?` (`{type,radius}`) applied by the pure render-time pre-pass `engine/geometry/corners.ts` `roundCorners` in `renderContours` (round = circular fillet, chamfer = flat cut, invertedRound = concave scoop); radius clamped per corner (no self-intersection), non-destructive, reused by canvas/thumbnail/export; set in the StrokePanel "Corners" section. Per-NODE corner widget is a future extension |
 | Blend / echo between layers | **Shipped** — Phase M; a 5th Pathfinder op (`PairOp "blend"` on `Glyph.booleanPairs` + `steps`) that morphs A→B as N echo steps. Each step renders through the normal layer path, so **outlined (stroked), multi-path, coloured, and corner** layers all morph; **genuinely different shapes** morph via arc-length resampling + cyclic alignment, and different **path counts** collapse the extra to a point. Pure `engine/geometry/blend.ts`, render-time in `buildFillGroups`, added at projectFile **v6** (current is v7). Caveat: resampled steps are polyline approximations |
-| i18n / language | Not implemented (roadmap) |
-| Export (bulk u_xxxx.svg + universal scale) | **Shipped** — Phase 6; every glyph → `u_xxxx.svg`, universal scale %, web zip (fflate) / desktop folder write (Tauri); reuses `buildFillGroups` so output matches the canvas. Optional **Silhouette** toggle → flat solid black (no colour/gradient/opacity, holes preserved), `-silhouette`-tagged archive |
+| Halftone brush (custom grid patterns) | **Shipped** — an isolated experimental `model:"halftone"` (`HalftoneStyle`): a rotated grid of circle/square/diamond/triangle/line/**custom-SVG** cells sized by distance to the centerline (`contrast` gamma), clipped to the swept body; open→ribbon+cap disc, closed→interior fill; `HALFTONE_MAX_CELLS` guard. Optional per-layer merge (settings v6) renders same-style halftone paths as one seamless tone |
+| Outline / preview (wireframe) mode toggle | **Shipped** — `viewportStore.viewMode`: `edit`, `outline` (Ctrl/Cmd+Shift+O — skeletons+nodes, fills hidden) and `final` (the exported look, chrome hidden, optional "Show path lines"). Session-only; export is unaffected |
+| Ghost / onion-skin reference glyphs | **Shipped** — Phase 4; `onionStore` (non-undoable), per-cell ghost toggle in the sidebar, opacity slider, shared coordinate space. Two modes: raw contour skeleton, or the **true rendered output** (`renderSvg`, via `glyphFillGroups`) |
+| Dark / light mode | **Shipped** — three themes (dark/light/**paper**) via CSS variables in `styles/theme.css`, plus a user **accent-colour** override; both persisted (settings v7) |
+| Em square + metrics guides | **Shipped** — Phase 1; em box, baseline and metric guides in shared world space, plus **adjustable** ascender/cap-height/x-height/descender guides (visual-only, `viewportStore.guides`) and a 1-unit coordinate reference legend |
+| Layer lock / hide | **Shipped** — Phase 3; enforced in depth (store no-ops on a locked layer, the controller refuses to start a gesture, `EditOverlay` hides its anchors) |
+| Grid: toggle, snap, adjustable density | **Shipped** — Phase 1; show/snap/size in the View menu, plus an independent "Snap to point" (anchors & paths) |
+| One panel per tool (contextual) | **Shipped** — Phase 2; the view-layer `TOOL_PANELS` map in `ToolPanel.tsx`, keyed by `ToolId`, so a tool gets an options panel only if it has settings (`ToolDefinition` stays React-free) |
+| **Dynamic alignment "smart guides"** | **Open** — see "Future seams" → Tier 1. Static "Snap to point" + the Align panel are shipped; live alignment LINES while dragging are not |
+| **Cap designer** (custom cap shapes) | **Open** — see "Future seams" → Tier 1 |
+| **Procedural / L-system brushes** | **Open** — see "Future seams" → Tier 2 |
+| **Per-NODE corner styles** | **Open** — see "Future seams" → Tier 3. Per-*path* `Contour.corner` is shipped |
+| i18n / language | **Open** — see "Future seams" → Tier 4 (deferred deliberately) |
+| Export (bulk u_xxxx.svg + universal scale) | **Shipped** — Phase 6; every glyph → `u_xxxx.svg`, universal scale %, web zip (fflate) / desktop folder write (Tauri); reuses `buildFillGroups` so output matches the canvas. Optional **Silhouette** toggle → flat solid black (no colour/gradient/opacity, holes preserved), `-silhouette`-tagged archive. The web zip's **name is editable** in the modal (`exportNaming.ts`; blank = the auto `glyphs[-tag].svg.zip`, so the default is unchanged) — desktop is unaffected since the user picks a folder |
 | Synthetic Bold / Italic export | **Shipped** — `features/export/styleTransform.ts` + an Export-modal Style selector (Regular/Bold/Italic presets + Stretch %/Skew °/Outline-extension sliders). **Export-only** (source stays single-weight): fills are built UPRIGHT, then the skew/stretch is an **exact affine of the FINAL outline** (`transformContours`) — NOT a skeleton transform + stroke re-expansion (which re-exposed corner glitches); shearing finished beziers keeps sharp corners clean and counters intact (det>0 preserves CW-outer/CCW-hole). The fills also get an **x-only horizontal extension** (`extendOutlineX` — union/intersect of horizontally-shifted copies → bold thickens vertical stems only, height locked; negative thins, but the discrete intersect can facet sharp corners so Italic defaults to **skew-only**). `extendOutlineX` **splits CW outers from CCW holes** and smears each (grow ink + erode counters, then subtract) so counters DON'T fill solid (the geometry-service booleans flatten a contour set to a union of solids — feeding a whole annulus through `union` would lose the hole). Style-tagged archive name (`glyphs-bold/italic.svg.zip`) |
 | Robust/stable save (low corruption risk) | **Shipped** — single auto-persisted workspace; versioned format + `migrate()` seam, debounced autosave + File → Save (Ctrl/Cmd+S), double-buffered writes, main→backup→seed load fallback (see Invariant 7) |
 | Portable project export/import (continue on another computer, web ⇄ desktop) | **Shipped** — File → Export/Import project… writes/reads one `.glphdrft` file (legacy `.glyphforge` still imports; the versioned `serializeProject` envelope) via `features/project/`; import reuses `migrate()` (corruption-safe) then `loadGlyphs` + `useHistoryStore…clear()` |
@@ -930,7 +1071,7 @@ dark/light/paper themes.)
   is unaffected.
 - **View menu (top bar):** grid show/snap/density, **snap to point** (anchors & paths), onion skin + opacity, reset view, the
   three view-mode toggles, the **Coordinate reference (1 u)** toggle (`viewportStore.unitRef`,
-  session-only — a draggable screen-fixed legend, `components/UnitReference.tsx`, whose X/Y arms
+  session-only — a draggable screen-fixed legend, `features/canvas/components/UnitReference.tsx`, whose X/Y arms
   are exactly 1 world unit at the current zoom; mounted in the overlay group, hidden in final view),
   **adjustable typography guides** (ascender/cap-height/x-height/
   descender; **visual-only** — `viewportStore.guides`, read by `MetricGuides`/`MetricLabels`;

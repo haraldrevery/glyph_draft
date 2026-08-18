@@ -15,6 +15,7 @@ import { constrainAngle } from "../../engine/snapping/snap";
 import { sameRef } from "../../state/editorStore";
 import { useViewportStore } from "../../state/viewportStore";
 import type { ToolDefinition, ToolPointerContext } from "./types";
+import { resolvedLayers } from "../layers/layerTree";
 
 /** Minimum drag (px) before an empty-canvas press counts as a marquee, not a click. */
 const MARQUEE_MIN_PX = 3;
@@ -70,7 +71,7 @@ function soleEndpointRef(d: DragState): PointRef | null {
 
 /** Visible, unlocked layers in TOP-TO-BOTTOM order — what the user can pick. */
 function editableLayersTopFirst(ctx: ToolPointerContext): Layer[] {
-  return (ctx.glyph?.layers ?? []).filter((l) => l.visible && !l.locked).reverse();
+  return ctx.glyph ? resolvedLayers(ctx.glyph).filter((l) => l.visible && !l.locked).reverse() : [];
 }
 
 /** Contours of a specific layer in the active glyph. */
@@ -213,7 +214,7 @@ export const selectTool: ToolDefinition = {
       const grid = vp.grid;
       const snapFn =
         vp.snapToGeometry && ctx.glyph
-          ? dragSnapFn(ctx.glyph.layers.filter((l) => l.visible), ctx.viewport, drag.refs)
+          ? dragSnapFn(resolvedLayers(ctx.glyph).filter((l) => l.visible), ctx.viewport, drag.refs)
           : undefined;
       const lead = leadPoint(drag.origin, drag.lead);
       const d: Vec2 = lead

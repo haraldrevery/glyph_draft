@@ -4,6 +4,7 @@ import type { GridSettings, Vec2 } from "../../types/viewport";
 import { pointInRing } from "../../engine/geometry/polygon";
 import { snapPoint } from "../../engine/snapping/snap";
 import type { ToolPointerContext } from "./types";
+import { resolvedLayers } from "../layers/layerTree";
 
 /**
  * Helpers shared by the node tools (select, lasso). These were duplicated verbatim
@@ -77,7 +78,7 @@ export function applyAnchorDelta(origin: Contour[], refs: PointRef[], d: Vec2): 
  *  drives the Pathfinder). The one rule shared by lasso, marquee, and select-all.
  *  Bottom-to-top order. */
 export function editableLayers(ctx: ToolPointerContext): Layer[] {
-  return (ctx.glyph?.layers ?? []).filter((l) => l.visible && !l.locked);
+  return ctx.glyph ? resolvedLayers(ctx.glyph).filter((l) => l.visible && !l.locked) : [];
 }
 
 /** Every anchor inside the polygon (world ring), as PointRefs. Pure. */

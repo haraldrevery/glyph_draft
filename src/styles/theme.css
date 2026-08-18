@@ -1682,6 +1682,65 @@ body {
 }
 
 /* Per-layer color chip: matches the layer's paths + nodes on the canvas. */
+/* Drag-and-drop reordering feedback. The row keeps its normal look; the drop point
+   is an accent rule on the edge it would land at, and nesting highlights the folder.
+   Drawn with box-shadow so nothing reflows mid-drag (a border would shift every row). */
+.layer-row-dragging {
+  opacity: 0.4;
+}
+
+.layer-row-drop-above {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.layer-row-drop-below {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.layer-row-drop-inside {
+  background: color-mix(in srgb, var(--accent) 22%, var(--surface));
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* Group (folder) rows. Share .layer-row so the selected/active cues are identical;
+   the disclosure triangle takes the slot the layer swatch occupies on a layer row, so
+   names stay aligned down the column. Indentation is applied inline as padding-left
+   (see LayerRow/GroupRow) — never margin, or the inset selection bar would stagger. */
+.layer-row-group {
+  font-weight: 500;
+}
+
+.layer-disclosure {
+  flex: none;
+  width: 10px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.layer-disclosure:hover {
+  color: var(--text);
+}
+
+.layer-name-group {
+  font-style: normal;
+}
+
+/* Marks a group whose contents render as ONE layer. */
+.layer-group-badge {
+  flex: none;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--accent);
+  opacity: 0.85;
+}
+
 .layer-swatch {
   flex: none;
   width: 10px;
@@ -2304,6 +2363,36 @@ body {
 .export-modal-sub code {
   font-size: 11px;
   color: var(--text);
+}
+
+/* Labelled text field in the export modal (the archive name). Mirrors the
+   .fill-hex-input treatment so inputs look the same across panels and modals. */
+.export-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.export-field-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.export-field-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  padding: 2px 6px;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.export-field-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .export-status {

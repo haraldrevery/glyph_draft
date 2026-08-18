@@ -10,6 +10,7 @@ import type { Vec2, Viewport } from "../../../types/viewport";
 import { getTool } from "../../tools";
 import { isEditable } from "../../../utils/dom";
 import type { Modifiers, ToolPointerContext } from "../../tools/types";
+import { resolvedLayers } from "../../layers/layerTree";
 
 /**
  * The single bridge between raw DOM input and the active tool. It owns the
@@ -41,7 +42,9 @@ function activeLayer(): Layer | null {
   const d = useDocumentStore.getState();
   const glyph = d.activeGlyphId ? d.glyphs[d.activeGlyphId] ?? null : null;
   if (!glyph || !d.activeLayerId) return null;
-  return glyph.layers.find((l) => l.id === d.activeLayerId) ?? null;
+  // Resolved, so a layer inside a hidden or LOCKED GROUP refuses to start a gesture
+  // even when its own flags are clear.
+  return resolvedLayers(glyph).find((l) => l.id === d.activeLayerId) ?? null;
 }
 
 export function useToolController(ref: RefObject<HTMLElement | null>) {
@@ -65,7 +68,8 @@ export function useToolController(ref: RefObject<HTMLElement | null>) {
       // exclusion here — placing/ hovering wants to snap TO existing geometry.
       let world = gridWorld;
       if (vp.snapToGeometry) {
-        const layers = (activeGlyph()?.layers ?? []).filter((l) => l.visible);
+        const g = activeGlyph();
+        const layers = (g ? resolvedLayers(g) : []).filter((l) => l.visible);
         const hit = snapToGeometry(layers, viewport, screen, SNAP_RADIUS, NO_EXCLUDE);
         world = hit ? hit.point : gridWorld;
       }

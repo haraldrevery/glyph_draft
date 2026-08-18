@@ -1,6 +1,6 @@
 import type { Glyph } from "../../types/document";
 import type { FontMetrics } from "../../constants/metrics";
-import { glyphFillGroups, type FillGroup } from "../canvas/layerFills";
+import { glyphFillGroups, type FillGroup, type RenderOptions } from "../canvas/layerFills";
 import { linearGradientSpec } from "../canvas/fillPaint";
 import { contoursToPath } from "../../engine/geometry/path";
 import { getGeometryService } from "../../engine/geometry/geometryEngine";
@@ -37,14 +37,24 @@ import {
  * the FontForge-compatible winding. Running `correctWinding` again would punch
  * holes into nested solid layers and diverge from what the canvas shows.
  */
+/** Everything that varies per export, as one object. Previously six positional params
+ *  ending in two adjacent booleans (`mergeHalftones`, `silhouette`) — a swapped pair
+ *  type-checked silently and would have shipped the wrong artwork. */
+export interface GlyphSvgOptions extends RenderOptions {
+  /** Universal scale applied to the artwork (not the em frame). */
+  scalePct?: number;
+  /** Export-only synthetic Bold/Italic. */
+  style?: StyleTransform;
+  /** Flat solid black, no colour/gradient/opacity — holes preserved. FontForge-ready. */
+  silhouette?: boolean;
+}
+
 export function glyphToSvg(
   glyph: Glyph,
   metrics: FontMetrics,
-  scalePct = 100,
-  style?: StyleTransform,
-  mergeHalftones = false,
-  silhouette = false,
+  opts: GlyphSvgOptions = {},
 ): string {
+  const { scalePct = 100, style, silhouette = false } = opts;
   const geom = getGeometryService();
 
   // Synthetic Bold/Italic (export-only). Build the fills UPRIGHT, then transform the
@@ -52,7 +62,7 @@ export function glyphToSvg(
   // (NOT a skeleton transform + stroke re-expansion, which re-exposed corner glitches).
   // Order: extend (x-only weight) on the upright fills, then shear/stretch the result.
   const styled = style && !isIdentityStyle(style);
-  let groups = glyphFillGroups(glyph, geom, mergeHalftones);
+  let groups = glyphFillGroups(glyph, geom, opts);
   if (styled && style.extensionUnits !== 0) {
     groups = groups.map((grp) => ({ ...grp, contours: extendOutlineX(grp.contours, style.extensionUnits, geom) }));
   }

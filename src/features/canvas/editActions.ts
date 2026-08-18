@@ -11,8 +11,10 @@ import {
 import { reverseContour } from "../../engine/geometry/path";
 import { contourBounds, alignDeltas, type AlignType, type BBox } from "../../engine/geometry/align";
 import { getGeometryService } from "../../engine/geometry/geometryEngine";
+import { withCorners } from "../../engine/geometry/corners";
 import type { Contour } from "../../types/geometry";
 import type { Glyph } from "../../types/document";
+import { resolvedLayers } from "../layers/layerTree";
 
 /**
  * Selection-level edit actions (nudge / flip / reverse) as plain, React-free
@@ -42,7 +44,7 @@ export function applyMatrixToSelection(m: Matrix): void {
   if (ids.size === 0) return;
 
   const changed: Contour[] = [];
-  for (const layer of glyph.layers) {
+  for (const layer of resolvedLayers(glyph)) {
     if (layer.locked) continue;
     const next = transformSelected(layer.contours, ids, m);
     for (let i = 0; i < layer.contours.length; i += 1) {
@@ -66,7 +68,7 @@ export function selectionBounds(): { minX: number; minY: number; maxX: number; m
     maxX = Math.max(maxX, x);
     maxY = Math.max(maxY, y);
   };
-  for (const layer of glyph.layers) {
+  for (const layer of resolvedLayers(glyph)) {
     for (const c of layer.contours) {
       for (const p of c.points) {
         if (!ids.has(p.id)) continue;
@@ -100,7 +102,7 @@ export function reverseSelection(): void {
   if (ids.size === 0) return;
 
   const reversed: Contour[] = [];
-  for (const layer of glyph.layers) {
+  for (const layer of resolvedLayers(glyph)) {
     if (layer.locked) continue;
     for (const c of layer.contours) {
       if (c.points.some((p) => ids.has(p.id))) reversed.push(reverseContour(c));
@@ -205,7 +207,7 @@ export function selectedContours(): Contour[] {
   if (!glyph) return [];
   const out: Contour[] = [];
   for (const r of selectedContourRefs()) {
-    const layer = glyph.layers.find((l) => l.id === r.layerId);
+    const layer = resolvedLayers(glyph).find((l) => l.id === r.layerId);
     if (!layer || layer.locked) continue;
     const c = layer.contours.find((ct) => ct.id === r.contourId);
     if (c) out.push(c);
@@ -229,12 +231,15 @@ export function expandSelectedStrokes(): void {
   const expanded: Contour[] = [];
   const removeRefs: { layerId: string; contourId: string }[] = [];
   for (const r of selectedContourRefs()) {
-    const layer = glyph.layers.find((l) => l.id === r.layerId);
+    const layer = resolvedLayers(glyph).find((l) => l.id === r.layerId);
     if (!layer || layer.locked) continue;
-    const c = layer.contours.find((ct) => ct.id === r.contourId);
-    if (!c || !c.stroke) continue;
+    const raw = layer.contours.find((ct) => ct.id === r.contourId);
+    if (!raw || !raw.stroke) continue;
+    // Round the path's corners FIRST, exactly like renderContours — otherwise a
+    // corner-styled path bakes sharp while the canvas shows it filleted.
+    const c = withCorners(raw);
     // Carry the path's paint onto each outline piece, exactly like renderContours.
-    for (const o of geom.expandStroke(c, c.stroke)) {
+    for (const o of geom.expandStroke(c, raw.stroke)) {
       expanded.push(c.paint ? { ...o, paint: c.paint } : o);
     }
     removeRefs.push({ layerId: r.layerId, contourId: r.contourId });
@@ -262,7 +267,10 @@ function unionBBox(a: BBox, b: BBox): BBox {
 /** A path's bbox for alignment: by its NODES (skeleton), or — in "outline" mode — by
  *  its own expanded-stroke outline (the visible filled shape). An unstroked path, or a
  *  stroke that fails to expand, falls back to the node bounds. */
-function pathBounds(c: Contour): BBox | null {
+function pathBounds(raw: Contour): BBox | null {
+  // Same corner pre-pass as renderContours, so "align by outline" measures the
+  // shape the user actually sees.
+  const c = withCorners(raw);
   if (useViewportStore.getState().alignMode === "outline" && c.stroke) {
     let acc: BBox | null = null;
     for (const o of getGeometryService().expandStroke(c, c.stroke)) {
