@@ -55,10 +55,51 @@ describe("roundCorners", () => {
     expect(r.points.filter((p) => p.y === 0 && p.x === 50)).toHaveLength(2);
   });
 
-  it("preserves winding (rounded winding equals the original)", () => {
+  // Split per style: these used to share one `orig`, so the second call hit the
+  // memo and silently re-checked the ROUND result. The assertion is winding, which
+  // is style-independent, so it passed and the chamfer branch was never exercised.
+  it("preserves winding — round", () => {
     const orig = square();
     expect(contourWinding(roundCorners(orig, { type: "round", radius: 20 }))).toBe(contourWinding(orig));
+  });
+
+  it("preserves winding — chamfer", () => {
+    const orig = square();
     expect(contourWinding(roundCorners(orig, { type: "chamfer", radius: 20 }))).toBe(contourWinding(orig));
+  });
+
+  it("preserves winding — invertedRound", () => {
+    const orig = square();
+    expect(contourWinding(roundCorners(orig, { type: "invertedRound", radius: 20 }))).toBe(contourWinding(orig));
+  });
+
+  // The memo is keyed by contour identity; `style` must be part of the validity
+  // check (as expandStroke validates `stroke ===`), or the same contour rendered
+  // with a different style silently returns the first style's geometry.
+  it("does not serve a cached result for a DIFFERENT style", () => {
+    const orig = square();
+    const rounded = roundCorners(orig, { type: "round", radius: 20 });
+    const chamfered = roundCorners(orig, { type: "chamfer", radius: 20 });
+
+    // A chamfer produces plain corner nodes with no handles; a round fillet
+    // produces smooth nodes carrying handles. Confusing the two is the bug.
+    expect(rounded.points.some((p) => p.handleOut || p.handleIn)).toBe(true);
+    expect(chamfered.points.every((p) => !p.handleOut && !p.handleIn)).toBe(true);
+    expect(chamfered.points.every((p) => p.type === "corner")).toBe(true);
+  });
+
+  it("still memoizes when the SAME style object is passed again", () => {
+    const orig = square();
+    const style = { type: "round", radius: 20 } as const;
+    expect(roundCorners(orig, style)).toBe(roundCorners(orig, style));
+  });
+
+  it("recomputes when a same-VALUE but different style object is passed", () => {
+    const orig = square();
+    const a = roundCorners(orig, { type: "chamfer", radius: 20 });
+    const b = roundCorners(orig, { type: "chamfer", radius: 40 });
+    // radius 20 trims to x=20; radius 40 trims to x=40 — different geometry.
+    expect(a.points.map((p) => p.x)).not.toEqual(b.points.map((p) => p.x));
   });
 
   it("leaves smooth nodes and open-path endpoints untouched", () => {
