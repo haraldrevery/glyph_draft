@@ -30,6 +30,29 @@ function overridesFrom(live: Contour[] | null): Map<string, Contour> | null {
   return live && live.length > 0 ? new Map(live.map((c) => [c.id, c])) : null;
 }
 
+/**
+ * A layer's contours with the drag overrides applied — returning the SAME array when
+ * none of its contours is being dragged. That identity is what the render-as-one
+ * group bake cache keys on: re-mapping every layer during a drag made every group
+ * re-bake (booleans, halftones) on every frame, even groups nowhere near the drag.
+ */
+export function withOverrides(
+  contours: Contour[],
+  overrides: Map<string, Contour> | null,
+): Contour[] {
+  if (!overrides) return contours;
+  let changed = false;
+  const out = contours.map((c) => {
+    const o = overrides.get(c.id);
+    if (o && o !== c) {
+      changed = true;
+      return o;
+    }
+    return c;
+  });
+  return changed ? out : contours;
+}
+
 /** The active layer's contours, with any in-flight drag override applied. Memoized on
  *  its inputs so it returns a STABLE reference when nothing changed — an edit replaces
  *  the `glyph` object (Invariant 2), a drag changes `live` — so downstream `useMemo`s
@@ -68,7 +91,7 @@ export function useVisibleRenderLayers(): RenderLayer[] {
       .filter((l) => l.visible)
       .map((l) => ({
         ...l,
-        contours: overrides ? l.contours.map((c) => overrides.get(c.id) ?? c) : l.contours,
+        contours: withOverrides(l.contours, overrides),
         color: colors.get(l.id)!,
       }));
   }, [glyph, live]);
@@ -91,7 +114,7 @@ export function useEditableLayers(): RenderLayer[] {
       .filter((l) => l.visible && !l.locked)
       .map((l) => ({
         id: l.id,
-        contours: overrides ? l.contours.map((c) => overrides.get(c.id) ?? c) : l.contours,
+        contours: withOverrides(l.contours, overrides),
         color: colors.get(l.id)!,
       }));
   }, [glyph, live]);

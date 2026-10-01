@@ -215,3 +215,20 @@ describe("edit.delete honors the deleteSplits setting", () => {
     useViewportStore.setState({ deleteSplits: false }); // restore default
   });
 });
+
+describe("undo/redo during a drag (regression)", () => {
+  // A drag holds the PRE-undo contours and re-commits them on pointer-up, so an undo
+  // pressed mid-drag was silently reverted. Undo/redo are disabled while it's live.
+  it("are disabled while a drag preview is live", () => {
+    useDocumentStore.getState().setAdvanceWidth(useDocumentStore.getState().glyphs[useDocumentStore.getState().activeGlyphId!]!.advanceWidth + 1);
+    const undo = commandById("edit.undo")!;
+    expect(undo.isEnabled!()).toBe(true);
+    useEditorStore.getState().setLiveContours([]);
+    useEditorStore.getState().setLiveContours([{ id: "x", closed: false, points: [] }]);
+    expect(undo.isEnabled!()).toBe(false);
+    expect(commandById("edit.redo")!.isEnabled!()).toBe(false);
+    useEditorStore.getState().setLiveContours(null);
+    expect(undo.isEnabled!()).toBe(true);
+  });
+});
+

@@ -1,8 +1,32 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useDocumentStore } from "../../state/documentStore";
 import { useHistoryStore } from "../../state/history";
-import { serializeCurrentProject, applyImportedProject } from "./projectActions";
+import {
+  serializeCurrentProject,
+  applyImportedProject,
+  parseProject,
+  replaceWorkspace,
+} from "./projectActions";
+import { PREIMPORT_KEY } from "../../storage/projectFile";
 import type { Glyph } from "../../types/document";
+
+const kv = vi.hoisted(() => {
+  const data = new Map<string, unknown>();
+  return {
+    data,
+    storage: {
+      getItem: async (k: string) => (data.has(k) ? structuredClone(data.get(k)) : null),
+      setItem: async (k: string, v: unknown) => void data.set(k, structuredClone(v)),
+      removeItem: async (k: string) => void data.delete(k),
+      keys: async () => [...data.keys()],
+      clear: async () => data.clear(),
+    },
+  };
+});
+vi.mock("../../storage/createStorage", () => ({
+  createStorage: async () => kv.storage,
+  getStorage: () => kv.storage,
+}));
 
 /**
  * The React-free core of project import/export. The platform I/O seam only moves the
@@ -64,5 +88,20 @@ describe("projectActions", () => {
   it("rejects an empty document", () => {
     const result = applyImportedProject(JSON.stringify({ version: 2, savedAt: 0, glyphs: {} }));
     expect(result.ok).toBe(false);
+  });
+
+  it("parseProject validates without touching the document", () => {
+    const before = state().glyphs;
+    const parsed = parseProject(JSON.stringify({ version: 8, savedAt: 0, glyphs: { z: glyph("z", 0x5a) } }));
+    expect(parsed.ok).toBe(true);
+    expect(state().glyphs).toBe(before);
+  });
+
+  it("replaceWorkspace snapshots the old workspace before replacing it", async () => {
+    kv.data.clear();
+    await replaceWorkspace({ z: glyph("z", 0x5a) });
+    expect(Object.keys(state().glyphs)).toEqual(["z"]);
+    const snap = kv.data.get(PREIMPORT_KEY) as { glyphs: Record<string, Glyph> };
+    expect(Object.keys(snap.glyphs).sort()).toEqual(["a", "b"]);
   });
 });

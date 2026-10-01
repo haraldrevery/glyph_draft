@@ -3,7 +3,9 @@ import { useSaveStatus } from "../state/persistence";
 /**
  * Header indicator for autosave/explicit-save state. Reads the save-status store
  * (driven by persistence.ts) and shows a quiet "Saved · hh:mm" / "Saving…" /
- * "Save failed" line — enough feedback that work is safe without adding chrome.
+ * "Save failed" / "Not saving" line — enough feedback that work is safe without
+ * adding chrome. "Not saving" means persistence deliberately refused to write
+ * (see `blockSaving`), which is NOT transient — the reason says how to resolve it.
  */
 export function SaveStatus() {
   const { state, savedAt, error } = useSaveStatus();
@@ -13,7 +15,9 @@ export function SaveStatus() {
       ? "Saving…"
       : state === "error"
         ? `Save failed${error ? `: ${error}` : ""}`
-        : state === "saved" && savedAt
+        : state === "paused"
+          ? `Not saving${error ? `: ${error}` : ""}`
+          : state === "saved" && savedAt
           ? `Saved · ${formatTime(savedAt)}`
           : "";
 
@@ -21,7 +25,7 @@ export function SaveStatus() {
 
   return (
     <span
-      className={`save-status${state === "error" ? " save-status-err" : ""}`}
+      className={`save-status${state === "error" || state === "paused" ? " save-status-err" : ""}`}
       role="status"
       aria-live="polite"
     >

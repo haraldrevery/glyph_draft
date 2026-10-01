@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useId, useState } from "react";
+import { coalesceNextEdit } from "../../state/history";
 
 interface SliderProps {
   value: number;
@@ -25,8 +26,12 @@ export function clampToStep(n: number, min: number, max: number, step: number): 
  *
  * Double-clicking the label swaps the track for a number field so an exact value
  * can be typed — Enter/blur commits (clamped + step-snapped), Esc cancels.
+ *
+ * A drag's many input events share one undo step (`coalesceNextEdit`).
  */
 export function Slider({ value, min, max, step, onChange, label }: SliderProps) {
+  // One drag fires an input event per step; tag them so a drag is ONE undo step.
+  const gesture = useId();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
 
@@ -70,7 +75,10 @@ export function Slider({ value, min, max, step, onChange, label }: SliderProps) 
           min={min}
           max={max}
           step={step}
-          onChange={(e) => onChange(Number(e.target.value))}
+          onChange={(e) => {
+            coalesceNextEdit(gesture);
+            onChange(Number(e.target.value));
+          }}
         />
       )}
     </label>

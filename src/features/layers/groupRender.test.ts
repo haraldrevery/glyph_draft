@@ -239,6 +239,28 @@ describe("the bake cache is keyed by render options too", () => {
     });
     expect(offAgain[0]!.contours).toBe(off[0]!.contours); // cache hit, same reference
   });
+
+  it("re-bakes when a Pathfinder pair INSIDE the group is added or its op changes", () => {
+    // Regression: the cache compared only the members' contour arrays. Pairs live on
+    // the glyph, so adding a pair (or switching union → intersect) between two members
+    // kept returning the old bake — on the canvas AND in the exported SVG.
+    const g = gl(
+      [lay("a", 0, "gp"), lay("b", 50, "gp"), lay("c", 300, "gp")],
+      [grp("gp", { renderAsOne: true })],
+    );
+    const fl = fillLayers(g);
+    const pts = (pairs: Parameters<typeof flattenRenderGroups>[2]) =>
+      flattenRenderGroups(fl, g.layerGroups!, pairs, geom())[0]!.contours.map((c) => c.points.length);
+    const none = pts([]);
+    const union = pts([{ id: "p", layerIds: ["a", "b"], op: "union" }]);
+    const inter = pts([{ id: "p", layerIds: ["a", "b"], op: "intersect" }]);
+    expect(union).not.toEqual(none); // the two squares fuse into one L-shape
+    expect(inter).not.toEqual(union); // intersect is just the overlap square
+    // And unchanged inputs still hit the cache.
+    const again = flattenRenderGroups(fl, g.layerGroups!, [{ id: "p", layerIds: ["a", "b"], op: "intersect" }], geom());
+    const again2 = flattenRenderGroups(fl, g.layerGroups!, [{ id: "p", layerIds: ["a", "b"], op: "intersect" }], geom());
+    expect(again2[0]!.contours).toBe(again[0]!.contours);
+  });
 });
 
 describe("hidden groups still win over render-as-one", () => {

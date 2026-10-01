@@ -429,20 +429,43 @@ export function bakeContours(
   geom: GeometryService,
   opts: RenderOptions = {},
 ): Contour[] {
-  return buildFillGroups(layers, pairs, geom, opts).flatMap((g) => g.contours);
+  // A boolean-pair result carries its (inherited) paint on the GROUP, not on its
+  // contours — flattening the groups alone dropped it, so a coloured pair turned black
+  // when merged or rendered inside a render-as-one group. Stamp the group's paint onto
+  // any contour that has none of its own. (Per-layer groups are split BY contour paint,
+  // so their contours already carry exactly the group's paint: unchanged.)
+  return buildFillGroups(layers, pairs, geom, opts).flatMap((g) =>
+    g.paint ? g.contours.map((c) => (c.paint ? c : { ...c, paint: g.paint! })) : g.contours,
+  );
 }
 
 /**
- * Cache one group's bake against the IDENTITY of its members' contour arrays, so a drag
- * elsewhere in the glyph doesn't re-bake every group on every frame. Contours are
- * immutable (Invariant 2), so identical references mean identical geometry.
+ * Cache one group's bake against EVERYTHING the bake reads, so a drag elsewhere in the
+ * glyph doesn't re-bake every group on every frame:
+ *  - the IDENTITY of each member's contour array (contours are immutable — Invariant 2 —
+ *    so identical references mean identical geometry);
+ *  - a signature of the member layers (ids + baked flag) and of the inner boolean
+ *    pairs (ids, operands, op, blend steps) — pairs and flags live on the glyph, not on
+ *    the contours, so without this a Pathfinder change INSIDE the group kept returning
+ *    the old bake (on the canvas and in exported SVGs) until a member path was edited;
+ *  - the geometry service instance.
  *
  * Keyed by group id AND `renderKey(opts)` — a render switch changes the baked geometry,
  * so keying on the group alone would hand back the other setting's bake (the same
  * mistake the twin mergeHalftones WeakMaps were built to avoid). Bounded by the number
  * of groups × distinct option sets; entries are replaced, not accumulated.
  */
-const bakeCache = new Map<string, { keys: readonly Contour[][]; result: Contour[] }>();
+const bakeCache = new Map<
+  string,
+  { keys: readonly Contour[][]; sig: string; geom: GeometryService; result: Contour[] }
+>();
+
+/** Everything about a bake's inputs that is NOT the contour arrays themselves. */
+function bakeSignature(members: FillLayer[], pairs: BooleanPair[]): string {
+  const m = members.map((l) => `${l.id}${l.baked ? "*" : ""}`).join(",");
+  const p = pairs.map((x) => `${x.id}:${x.layerIds[0]}+${x.layerIds[1]}:${x.op}:${x.steps ?? ""}`).join(",");
+  return `${m}|${p}`;
+}
 
 function cachedBake(
   groupId: string,
@@ -453,12 +476,19 @@ function cachedBake(
 ): Contour[] {
   const cacheKey = `${groupId}|${renderKey(opts)}`;
   const keys = members.map((m) => m.contours);
+  const sig = bakeSignature(members, pairs);
   const hit = bakeCache.get(cacheKey);
-  if (hit && hit.keys.length === keys.length && hit.keys.every((k, i) => k === keys[i])) {
+  if (
+    hit &&
+    hit.geom === geom &&
+    hit.sig === sig &&
+    hit.keys.length === keys.length &&
+    hit.keys.every((k, i) => k === keys[i])
+  ) {
     return hit.result;
   }
   const result = bakeContours(members, pairs, geom, opts);
-  bakeCache.set(cacheKey, { keys, result });
+  bakeCache.set(cacheKey, { keys, sig, geom, result });
   return result;
 }
 

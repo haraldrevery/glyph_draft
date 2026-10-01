@@ -143,8 +143,14 @@ export function LayersPanel() {
       onSelect: () => doc().setGroupLocked(grp.id, !grp.locked),
     },
     {
-      label: grp.renderAsOne ? "Render separately" : "Render as one layer",
+      // A Pathfinder operand group must render as one (the store refuses otherwise).
+      label: grp.renderAsOne
+        ? pairForLayer(pairs, grp.id)
+          ? "Render separately (used by Pathfinder)"
+          : "Render separately"
+        : "Render as one layer",
       onSelect: () => doc().setGroupRenderAsOne(grp.id, !grp.renderAsOne),
+      disabled: !!grp.renderAsOne && !!pairForLayer(pairs, grp.id),
     },
     { label: "Ungroup", onSelect: () => doc().ungroupGroup(grp.id) },
     {

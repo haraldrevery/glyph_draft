@@ -80,8 +80,9 @@ interface DocumentState {
 
   // --- Glyphs (document) ---
   addGlyph: (codepoint: number) => void;
-  /** Add every code point not already present (one glyph per code point), in ONE
-   *  undo step. Keeps the active glyph; a no-op (no history) if all already exist. */
+  /** Add every code point not already present (one glyph per code point). Keeps the
+   *  active glyph. Structural (the glyph key set changes), so NOT undoable — see
+   *  state/history.ts. */
   addGlyphs: (codepoints: number[]) => void;
   deleteGlyph: (glyphId: string) => void;
   /** Set the active glyph's advance width (font units; clamped ≥ 0). One undo step. */
@@ -549,7 +550,7 @@ export const useDocumentStore = create<DocumentState>()(
             added[glyph.id] = glyph;
           }
           if (Object.keys(added).length === 0) return; // nothing new → no history step
-          // Keep the active glyph; one undo step removes the whole set.
+          // Keep the active glyph. (Structural: not recorded in undo history.)
           set({ glyphs: { ...s.glyphs, ...added } });
         },
 
@@ -922,7 +923,7 @@ export const useDocumentStore = create<DocumentState>()(
           // lands on b's layer (the target), mirroring drag-to-merge.
           const la = findLayer(glyph, a.layerId);
           const lb = findLayer(glyph, b.layerId);
-          if (!la || !lb || la.locked || lb.locked) return;
+          if (!la || !lb || effectiveLocked(glyph, la) || effectiveLocked(glyph, lb)) return;
           const ca = la.contours.find((c) => c.id === a.contourId);
           const cb = lb.contours.find((c) => c.id === b.contourId);
           if (!ca || !cb) return;
@@ -993,12 +994,15 @@ export const useDocumentStore = create<DocumentState>()(
           const glyph = s.glyphs[s.activeGlyphId];
           if (!glyph) return;
           const target = findLayer(glyph, targetLayerId);
-          if (!target || target.locked) return;
+          if (!target || effectiveLocked(glyph, target)) return;
           const move = new Set(contourIds);
           // Collect the contours to move (from any unlocked source layer) in paint order.
+          // The SAME lock rule as the strip pass below — with only the layer's own flag
+          // here, a contour in a locked GROUP was copied to the target but never removed
+          // from its source, leaving one contour id on two layers.
           const moving: Contour[] = [];
           for (const layer of glyph.layers) {
-            if (layer.locked) continue;
+            if (effectiveLocked(glyph, layer)) continue;
             for (const c of layer.contours) if (move.has(c.id)) moving.push(c);
           }
           if (moving.length === 0) return;
@@ -1024,7 +1028,7 @@ export const useDocumentStore = create<DocumentState>()(
           const move = new Set(contourIds);
           const moving: Contour[] = [];
           for (const layer of glyph.layers) {
-            if (layer.locked) continue;
+            if (effectiveLocked(glyph, layer)) continue; // same rule as the strip below
             for (const c of layer.contours) if (move.has(c.id)) moving.push(c);
           }
           if (moving.length === 0) return null;
@@ -1077,6 +1081,7 @@ export const useDocumentStore = create<DocumentState>()(
           // Drop the original stroked centerlines (contour ids are unique per glyph).
           const removeIds = new Set(removeRefs.map((r) => r.contourId));
           const stripped = glyph.layers.map((layer) => {
+            if (effectiveLocked(glyph, layer)) return layer; // never consume locked art
             const kept = layer.contours.filter((c) => !removeIds.has(c.id));
             return kept.length === layer.contours.length ? layer : { ...layer, contours: kept };
           });
@@ -1337,13 +1342,21 @@ export const useDocumentStore = create<DocumentState>()(
             .filter((i) => i >= 0);
           if (indices.length < 2) return; // need ≥2 real layers to merge
           const insertAt = Math.min(...indices);
-          // Keep order; drop the removed layers and slot the merged one where the
-          // lowest removed layer was (so paint order is preserved).
+          // The merged layer REPLACES the lowest removed layer: its slot (so paint order
+          // is preserved) and its group membership. Taking the slot without the group
+          // would wedge an outsider into the middle of that group's run whenever other
+          // members sit above and below it — breaking the CONTIGUITY invariant (the
+          // group then rendered as two pieces with one id). Removing the other merged
+          // layers only shrinks runs, which never breaks contiguity.
+          const lowestGroup = glyph.layers[insertAt]!.groupId;
+          const placed: Layer = { ...merged };
+          if (lowestGroup) placed.groupId = lowestGroup;
+          else delete placed.groupId;
           const below = glyph.layers
             .slice(0, insertAt)
             .filter((l) => !remove.has(l.id)).length;
           const kept = glyph.layers.filter((l) => !remove.has(l.id));
-          const layers = [...kept.slice(0, below), merged, ...kept.slice(below)];
+          const layers = [...kept.slice(0, below), placed, ...kept.slice(below)];
 
           let nextGlyph: Glyph = { ...glyph, layers };
           if (glyph.booleanPairs) {
@@ -1409,9 +1422,12 @@ export const useDocumentStore = create<DocumentState>()(
             name: name?.trim() || nextGroupName(glyph),
             visible: true,
             locked: false,
-            // New groups render as ONE layer — that is what "group" means here.
-            // Turn it off per group to get a plain organisational folder.
-            renderAsOne: true,
+            // New groups are ORGANISATION-ONLY: grouping must not change what renders
+            // or exports. "Render as one" bakes members into a single fill region,
+            // which reorders mixed colours by paint (a single layer's rule) and turns
+            // a pair with one foot outside the group dormant — so it stays opt-in
+            // (and is switched on automatically when the group is made a Pathfinder
+            // operand, in setBooleanPair).
             ...(parentId ? { parentId } : {}),
           };
 
@@ -1506,10 +1522,17 @@ export const useDocumentStore = create<DocumentState>()(
             groups.map((g) => (g.id === groupId ? { ...g, locked } : g)),
           ),
 
-        setGroupRenderAsOne: (groupId, renderAsOne) =>
+        setGroupRenderAsOne: (groupId, renderAsOne) => {
+          // A group that is a Pathfinder operand renders as one BY DEFINITION —
+          // switching it off would leave the pair unable to resolve (the boolean
+          // silently vanishes). Ungroup / clear the pair first; the panel disables it.
+          const s = get();
+          const glyph = s.activeGlyphId ? s.glyphs[s.activeGlyphId] : undefined;
+          if (!renderAsOne && glyph?.booleanPairs?.some((p) => p.layerIds.includes(groupId))) return;
           mutateGroups((groups) =>
             groups.map((g) => (g.id === groupId ? { ...g, renderAsOne } : g)),
-          ),
+          );
+        },
 
         selectGroup: (groupId, additive = false) => {
           const s = get();
@@ -1543,7 +1566,12 @@ export const useDocumentStore = create<DocumentState>()(
           const nGroup = neighbour.groupId ? findGroup(glyph, neighbour.groupId) : undefined;
           // Resolve the neighbour to the sibling BLOCK it belongs to.
           let block: [number, number];
-          if (!nGroup) {
+          if (nGroup && neighbour.groupId === self.parentId) {
+            // A LAYER directly in our own parent is a sibling: swap with it. (Without
+            // this case the walk below looked for a group whose parent is our parent,
+            // found none, and the move was a silent no-op.)
+            block = [probe, probe];
+          } else if (!nGroup) {
             if ((self.parentId ?? undefined) !== undefined) return; // leaving the parent
             block = [probe, probe];
           } else {

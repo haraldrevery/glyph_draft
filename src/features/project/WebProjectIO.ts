@@ -21,7 +21,9 @@ export class WebProjectIO implements ProjectIOService {
     document.body.appendChild(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(url);
+    // Revoking synchronously after click() can abort the download in some browsers
+    // (the request starts asynchronously) — and this is the user's only file copy.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
     return { cancelled: false, destination: suggestedName };
   }
 

@@ -199,6 +199,17 @@ export function parsePathD(d: string): ParsedSubpath[] {
       continue;
     }
 
+    // A drawing command with no open subpath — after a Z, which per the SVG spec
+    // continues from the closed subpath's start (cx/cy were reset to it above), or a
+    // malformed path with no leading M — implicitly starts one at the current point.
+    // Without this every drawing helper dereferenced a null `cur` and the whole
+    // import threw (and silently did nothing).
+    if (C !== "M" && !cur && hasNum()) {
+      cur = [anchor({ x: cx, y: cy })];
+      sx = cx;
+      sy = cy;
+    }
+
     // The parameter loop: repeat the command for each extra coordinate group.
     let first = true;
     while (hasNum()) {

@@ -33,3 +33,24 @@ describe("toPaint", () => {
     expect(toPaint(undefined, 0.5)).toEqual({ opacity: 0.5 }); // black at 50%
   });
 });
+
+describe("import hardening (regression)", () => {
+  it("transforms with CSS units read as numbers, not NaN", () => {
+    expect(apply(parseTransform("translate(10px, 5px)"), { x: 0, y: 0 })).toEqual({ x: 10, y: 5 });
+    const r = apply(parseTransform("rotate(90deg)"), { x: 1, y: 0 });
+    expect(r.x).toBeCloseTo(0);
+    expect(r.y).toBeCloseTo(1);
+  });
+
+  it("an unparseable transform function is ignored rather than poisoning the points", () => {
+    const p = apply(parseTransform("translate(oops) scale(2)"), { x: 1, y: 1 });
+    expect(p).toEqual({ x: 2, y: 2 });
+  });
+
+  it("a paint server or currentColor falls back to the default ink (was invisible)", () => {
+    expect(toPaint("url(#grad)", 1)).toBeUndefined();
+    expect(toPaint('url("#grad")', 1)).toBeUndefined();
+    expect(toPaint("currentColor", 1)).toBeUndefined();
+  });
+});
+

@@ -122,7 +122,7 @@ export function glyphToSvg(
         const stops = spec.stops
           .map((st) => {
             const so = st.opacity != null ? ` stop-opacity="${num(st.opacity)}"` : "";
-            return `<stop offset="${num(st.offset)}" stop-color="${st.color}"${so} />`;
+            return `<stop offset="${num(st.offset)}" stop-color="${attr(st.color)}"${so} />`;
           })
           .join("");
         defsParts.push(
@@ -131,7 +131,7 @@ export function glyphToSvg(
         fill = `url(#${spec.id})`;
       }
       const op = paint?.opacity != null && paint.opacity !== 1 ? ` fill-opacity="${num(paint.opacity)}"` : "";
-      return `    <path d="${d}" fill-rule="nonzero" fill="${fill}"${op} />`;
+      return `    <path d="${d}" fill-rule="nonzero" fill="${attr(fill)}"${op} />`;
     })
     .join("\n");
 
@@ -191,6 +191,15 @@ function unionBounds(a: BBox, b: BBox | null): BBox {
 }
 
 /** Compact, stable number rendering for SVG attributes (3 decimals max). */
+/** Escape a value for a double-quoted XML attribute. Colours come from user input and
+ *  imported files; one stray quote made the whole exported SVG malformed. A plain hex
+ *  colour is returned unchanged, so ordinary output is byte-identical. */
+function attr(value: string): string {
+  return value.replace(/[&<>"]/g, (ch) =>
+    ch === "&" ? "&amp;" : ch === "<" ? "&lt;" : ch === ">" ? "&gt;" : "&quot;",
+  );
+}
+
 function num(value: number): string {
   return (Math.round(value * 1000) / 1000).toString();
 }

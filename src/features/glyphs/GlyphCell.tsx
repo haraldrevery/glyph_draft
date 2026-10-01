@@ -2,6 +2,7 @@ import type { MouseEvent } from "react";
 import { formatCodepoint, glyphLabel } from "../../state/glyphHelpers";
 import type { Glyph } from "../../types/document";
 import { GlyphThumbnail } from "./GlyphThumbnail";
+import { ErrorBoundary } from "../../components/ErrorBoundary";
 
 /**
  * One glyph in the sidebar grid. The whole cell activates the glyph; a ghost
@@ -49,7 +50,16 @@ export function GlyphCell({
       onContextMenu={onContextMenu}
     >
       <div className="glyph-cell-preview">
-        <GlyphThumbnail glyph={glyph} />
+        <ErrorBoundary
+          resetKey={glyph}
+          fallback={() => (
+            <span className="glyph-thumb-error" title="This glyph couldn't be drawn">
+              !
+            </span>
+          )}
+        >
+          <GlyphThumbnail glyph={glyph} />
+        </ErrorBoundary>
         {!active && (
           <button
             type="button"

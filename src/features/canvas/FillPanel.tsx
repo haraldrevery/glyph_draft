@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { coalesceNextEdit } from "../../state/history";
 import { useDocumentStore } from "../../state/documentStore";
 import { usePaletteStore } from "../../state/paletteStore";
 import { useColorPaletteStore } from "../../state/colorPaletteStore";
@@ -202,7 +203,10 @@ export function FillPanel() {
                   type="color"
                   className={`stroke-fill-swatch${mixedFillColor ? " is-mixed" : ""}`}
                   value={paintColor}
-                  onChange={(e) => applyPaint({ fill: e.target.value })}
+                  onChange={(e) => {
+                    coalesceNextEdit("fill-color");
+                    applyPaint({ fill: e.target.value });
+                  }}
                 />
                 {mixedFillColor && <span className="swatch-mixed">Mixed</span>}
                 <input
@@ -413,7 +417,10 @@ export function FillPanel() {
                       className="stroke-fill-swatch"
                       aria-label="Gradient end color"
                       value={gradient.to}
-                      onChange={(e) => setGradient({ to: e.target.value })}
+                      onChange={(e) => {
+                        coalesceNextEdit("fill-gradient-to");
+                        setGradient({ to: e.target.value });
+                      }}
                     />
                   </div>
                 </label>
@@ -457,7 +464,10 @@ export function FillPanel() {
                     className={`stroke-fill-swatch${mixedStrokeColor ? " is-mixed" : ""}`}
                     aria-label="Stroke colour"
                     value={strokeColor}
-                    onChange={(e) => setStrokeColor(targetIds, e.target.value)}
+                    onChange={(e) => {
+                      coalesceNextEdit("stroke-color");
+                      setStrokeColor(targetIds, e.target.value);
+                    }}
                   />
                   {mixedStrokeColor && <span className="swatch-mixed">Mixed</span>}
                 </label>
@@ -489,7 +499,10 @@ export function FillPanel() {
                           className="stroke-fill-swatch"
                           aria-label="Stroke gradient end color"
                           value={strokeGradient.to}
-                          onChange={(e) => setStrokeGrad({ to: e.target.value })}
+                          onChange={(e) => {
+                            coalesceNextEdit("stroke-gradient-to");
+                            setStrokeGrad({ to: e.target.value });
+                          }}
                         />
                       </div>
                     </label>

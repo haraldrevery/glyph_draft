@@ -2472,3 +2472,37 @@ body {
   display: flex;
   justify-content: flex-end;
 }
+
+/* Scoped render failure on the canvas (CanvasViewport): one glyph that can't be drawn
+   shows this banner instead of taking the app down. */
+.canvas-render-error {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(640px, calc(100% - 32px));
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 12px;
+  pointer-events: auto;
+}
+.canvas-render-error span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.glyph-thumb-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--accent);
+  font-weight: 600;
+}

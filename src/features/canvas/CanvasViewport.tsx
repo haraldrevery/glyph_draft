@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useViewportStore } from "../../state/viewportStore";
 import { useEditorStore } from "../../state/editorStore";
 import { useActiveGlyph } from "../../state/documentStore";
@@ -30,8 +30,11 @@ import { ToolPanel } from "./ToolPanel";
 import { StrokePanel } from "./StrokePanel";
 import { FillPanel } from "./FillPanel";
 import { ContextMenu, useContextMenu, type ContextMenuItem } from "../../components/menu";
+import { ErrorBoundary } from "../../components/ErrorBoundary";
+import { useHistoryStore } from "../../state/history";
+import { useDocumentStore } from "../../state/documentStore";
 import { commandMenuItems } from "../../commands";
-import { visibleRows } from "../layers/layerTree";
+import { effectiveLocked, visibleRows } from "../layers/layerTree";
 import {
   canMovePaths,
   moveSelectedPathsToLayer,
@@ -104,6 +107,32 @@ export function CanvasViewport() {
 
   const ctxMenu = useContextMenu();
 
+  // A glyph whose geometry throws while rendering (scoped boundary below) shows a
+  // banner instead of taking the whole app down. The boundaries retry whenever the
+  // glyph object changes, so Undo / switching glyphs recovers by itself; a manual
+  // Retry bumps `retry` for a transient failure.
+  const [renderError, setRenderError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => setRenderError(null), [glyph, retry]);
+  const canUndo = useHistoryStore((s) => s.pastStates.length > 0);
+  const undoLast = () => {
+    useHistoryStore.getState().undo();
+    useDocumentStore.getState().reconcileActive();
+    useEditorStore.getState().resetEphemeral();
+  };
+  // Stable per (glyph object, retry): a fresh value every render would make a
+  // boundary clear-and-rethrow in a loop.
+  const resetKey = useMemo(() => ({ glyph, retry }), [glyph, retry]);
+  const contain = (node: ReactNode) => (
+    <ErrorBoundary
+      resetKey={resetKey}
+      fallback={() => null}
+      onError={(e) => setRenderError(e.message)}
+    >
+      {node}
+    </ErrorBoundary>
+  );
+
   usePanZoom(containerRef);
   useToolController(containerRef);
 
@@ -155,7 +184,8 @@ export function CanvasViewport() {
                 ? { label: `${"\u2007".repeat(row.depth * 2)}${row.group.name}`, disabled: true }
                 : {
                     label: `${"\u2007".repeat(row.depth * 2)}${row.layer!.name}`,
-                    disabled: row.layer!.locked || allOnLayer(row.layer!.id),
+                    // Group locks count too (the store refuses those targets).
+                    disabled: effectiveLocked(glyph, row.layer!) || allOnLayer(row.layer!.id),
                     onSelect: () => moveSelectedPathsToLayer(row.layer!.id),
                   },
             );
@@ -182,9 +212,9 @@ export function CanvasViewport() {
               <EmSquare metrics={metrics} />
               <MetricGuides metrics={metrics} />
             </g>
-            {!final && <OnionSkin />}
-            <GlyphView />
-            {!final && <PreviewLayer />}
+            {!final && contain(<OnionSkin />)}
+            {contain(<GlyphView />)}
+            {!final && contain(<PreviewLayer />)}
           </g>
 
           {/* Screen space: upright, constant-size labels and editing chrome. */}
@@ -216,6 +246,20 @@ export function CanvasViewport() {
           snapOn={grid.snap}
         />
       </div>
+
+      {renderError && (
+        <div className="canvas-render-error" role="alert">
+          <span>This glyph couldn't be drawn: {renderError}</span>
+          {canUndo && (
+            <button type="button" className="btn-mini" onClick={undoLast}>
+              Undo last change
+            </button>
+          )}
+          <button type="button" className="btn-mini" onClick={() => setRetry((n) => n + 1)}>
+            Retry
+          </button>
+        </div>
+      )}
 
       <Toolbar />
       <AlignPanel />

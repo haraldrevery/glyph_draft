@@ -40,5 +40,7 @@ function triggerDownload(bytes: Uint8Array, fileName: string, mime: string): voi
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
+  // Revoking synchronously after click() can abort the download in some browsers
+  // (the request starts asynchronously) — and this is the user's only file copy.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }

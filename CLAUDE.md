@@ -63,7 +63,7 @@ These are the cheapest possible regression guard: deterministic, no DOM, no
 mocks. **Before claiming a geometry change works, run `npm test`** — do not assert
 verification narratively.
 
-**The suite is much wider than the two paragraphs above imply — 46 files / 433 tests.**
+**The suite is much wider than the two paragraphs above imply — 57 files / 642 tests.**
 Beyond the engine modules named there it also covers `affine`, `align`, `blend`, `corners`,
 `freehand`, `nodeHandles`, `polygon`, `profile`, `svgPath`, `topology`, and the big one,
 `strokeOutline.test.ts` (67 tests, ~70% of the runtime — the guard on the riskiest file).
@@ -92,7 +92,7 @@ touching `glyphToSvg`/`buildFillGroups`/winding:
 ## Source Structure
 
 > Kept in sync with the real tree; if you add a file, add it here. Test files (`*.test.ts`,
-> colocated next to their module) are omitted for brevity — there are 46 of them.
+> colocated next to their module) are omitted for brevity — there are 57 of them.
 
 ```
 src/
@@ -127,7 +127,9 @@ src/
                                  #   Per-contour STYLE actions all go through ONE `patchContours(ids, fn)`
                                  #   closure helper (cross-layer, skips locked, one undo step) — add the
                                  #   next style field there, don't re-copy the traversal
-    history.ts                   # PER-GLYPH undo/redo (Map<glyphId,{past,future}>, limit 200) — useHistoryStore/useHistory; structural glyph add/delete not recorded
+    history.ts                   # PER-GLYPH undo/redo (Map<glyphId,{past,future}>, limit 200) — useHistoryStore/useHistory; structural glyph add/delete not recorded;
+                                 #   coalesceNextEdit(tag): a slider/knob/colour drag = ONE step (see Invariant 2)
+    tabLock.ts                   # claimWorkspace(): Web Lock so only ONE tab autosaves the workspace (a second tab opens but doesn't save)
     editorStore.ts               # Live ephemeral state (pen in-progress, drag) — NOT undoable
     clipboardStore.ts            # Clipboard — survives undo and tool switches
     onionStore.ts                # Onion-skin state — NOT undoable
@@ -141,7 +143,8 @@ src/
                                  #   FIELD-BY-FIELD, so a new optional Contour/Layer field must be
                                  #   added there too (omitting one compiles clean; that is how
                                  #   paint/filled/corner/baked were once silently dropped on paste)
-    persistence.ts               # Document: load-on-launch + debounced autosave + saveNow + useSaveStatus
+    persistence.ts               # Document: load-on-launch (missing/invalid/unreadable slots handled differently) + serialized,
+                                 #   debounced autosave (flushed on tab hide) + saveNow + blockSaving + useSaveStatus — see Invariant 7
     settings.ts                  # Preferences: load-on-launch + debounced autosave (separate KV key)
   storage/
     StorageService.ts            # KV interface everything talks to
@@ -149,7 +152,8 @@ src/
     TauriStorage.ts              # Desktop adapter (lazy-loaded, code-split)
     createStorage.ts             # Memoized platform factory
     platform.ts                  # isTauri() — checks window globals, no tauri import
-    projectFile.ts               # Versioned document format + migrate() seam (corruption-safe)
+    projectFile.ts               # Versioned document format + migrate() seam (corruption-safe); PREIMPORT_KEY
+    sanitize.ts                  # sanitizeGlyph: load-time structural REPAIR (never reject) of anything that would crash rendering
     settingsFile.ts              # Versioned PREFERENCES format + migrateSettings/mergeSettings (defaults-fallback)
   features/
     canvas/                      # Main viewport, grid, HUD, tool controller
@@ -188,8 +192,9 @@ src/
       shared.ts                  # Shared node-tool helpers (anchor-delta, selected-layer scope, refsInPolygon)
       snapGeometry.ts            # Pure "Snap to point" resolver (nearestAnchor → nearestPointOnContours)
       index.ts                   # The TOOLS registry — drives toolbar + shortcuts + routing
-    layers/                      # LayersPanel, LayerRow, mergeLayers (destructive flatten),
-                                 #   layerColors (auto per-layer editing palette)
+    layers/                      # LayersPanel, LayerRow, GroupRow, useRowDrag (drag-reorder), mergeLayers (destructive flatten),
+                                 #   layerColors (auto per-layer editing palette), layerTree (the GROUP tree as a pure
+                                 #   view over the flat layers array: groupRange, effectiveLocked/Visible, resolvedLayers — see 5b)
     glyphs/                      # GlyphSidebar (resizable: right-edge drag handle → viewportStore.sidebarWidth; drag left to collapse to a re-open grip; "Reset view" restores 212px/expanded), GlyphCell, GlyphThumbnail, glyphSets (set templates)
     settings/                    # KeybindingsModal — the keyboard-shortcut editor
     clipboard/
@@ -213,7 +218,7 @@ src/
     project/                     # Portable PROJECT file (whole document) — web ⇄ desktop
       ProjectIOService.ts       # Platform seam + createProjectIO() factory
       WebProjectIO.ts           # Web impl: Blob download + hidden file-input
-      TauriProjectIO.ts         # Desktop impl: save/open dialog + FS (lazy, code-split). ⚠️ Desktop dialogs/FS need the Rust side wired: `src-tauri/Cargo.toml` + `lib.rs` register BOTH `tauri-plugin-fs` AND `tauri-plugin-dialog`, and `capabilities/default.json` grants `dialog:default` + BROAD `fs:allow-read/write-text-file` (`**`/`$HOME/**`) for user-PICKED files (project .glphdrft anywhere, SVG export folder) — distinct from the `$APPDATA/**`-scoped FS the autosave StorageService uses. (The dialog plugin was missing → import/export/SVG-export silently failed on desktop.)
+      TauriProjectIO.ts         # Desktop impl: save/open dialog + FS (lazy, code-split). ⚠️ Desktop dialogs/FS need the Rust side wired: `src-tauri/Cargo.toml` + `lib.rs` register BOTH `tauri-plugin-fs` AND `tauri-plugin-dialog`, and `capabilities/default.json` grants `dialog:default` + BROAD `fs:allow-read/write-text-file` (`**`/`$HOME/**`) for user-PICKED files (project .glphdrft anywhere, SVG export folder) — distinct from the `$APPDATA/**`-scoped FS the autosave StorageService uses (which also needs `fs:allow-rename` for its atomic temp-file writes). (The dialog plugin was missing → import/export/SVG-export silently failed on desktop.)
       projectActions.ts         # serialize / applyImportedProject (reuses projectFile envelope + migrate)
     info/                        # Information top-bar menu
       InfoModal.tsx             # About / Licence / Legal / User guide in ONE modal with a sidebar;
@@ -226,7 +231,10 @@ src/
     controls/                    # Toggle, Slider, NumberInput, Knob (rotary angle picker), CollapseButton
     menu/                        # MenuBar, Menu, MenuItem, SubMenu (nested flyout: Settings → Theme) + ContextMenu (right-click, supports nested submenus — the open submenu is PORTALED to <body> at fixed coords so it escapes the list's vertical scroll container; an in-place left:100% flyout otherwise just made the menu scroll horizontally. The outside-pointerdown close-handler ignores clicks inside `.context-menu-root` OR a portaled `.context-menu-submenu` — else a submenu click closed the menu before its onSelect ran, e.g. "Move to layer" appeared to do nothing)
     SaveStatus.tsx               # Header autosave indicator (reads useSaveStatus)
-    ErrorBoundary.tsx            # Root render-error boundary (wraps <App/> in main.tsx) — shows a reload panel instead of a white screen; work is autosaved
+    ErrorBoundary.tsx            # Render-error boundary. ROOT (wraps <App/>): reload + "Export project file" rescue. SCOPED (fallback + resetKey):
+                                 #   around the canvas glyph/onion/preview layer, each sidebar thumbnail, the text preview — one bad glyph
+                                 #   degrades that view (canvas banner offers Undo/Retry). Deliberately NOT inside the shared fill
+                                 #   pipeline: an export of a broken glyph must fail loudly, not write an SVG with geometry missing
   content/                       # Bundled Markdown for the Info modal (about/licence/legal/user-guide)
                                  #   — imported `?raw` (see vite-env.d.ts), rendered with `marked`
   utils/
@@ -250,6 +258,13 @@ src/
 - `documentStore` — glyph model. Plain serializable data only (no class instances). Undo/redo is **PER-GLYPH**, owned by `state/history.ts` (not zundo): a `Map<glyphId, {past, future}>` driven by one `documentStore.subscribe`. Ctrl+Z while viewing a glyph only ever changes THAT glyph (an undo can never silently revert an off-screen glyph). `useHistoryStore` exposes the same `undo`/`redo`/`clear`/`pastStates`/`futureStates` shape the call sites used (pastStates/futureStates are the ACTIVE glyph's stacks, so canUndo/canRedo are per active glyph). History is session-only, never serialized.
 - `editorStore` — live per-frame state (pen pending point, shape draft, liveContours during drag). Never undoable. Cleared on commit or undo.
 - One user action = exactly one Ctrl+Z step (one `set({glyphs})` per action = one per-glyph entry). Live geometry must not pollute the timeline.
+  **Continuous controls** (Slider, Knob, NumberInput, the Color-panel colour inputs) commit on every input
+  event, so they call `history.coalesceNextEdit(tag)` before each change: consecutive changes with the same
+  tag on the same glyph, each ≤1 s apart, share ONE step. There is deliberately no begin/end pairing (a
+  missed "end" would merge unrelated edits) — the tag is consumed by the next change and expires at the end
+  of the task. A new continuous control that edits the document must tag its changes the same way.
+- **Undo/redo are disabled while a drag preview is live** (`editorStore.liveContours !== null`): the gesture
+  holds a pre-undo snapshot and would re-commit it on pointer-up.
 - **Recording rule:** the history subscriber records per-glyph diffs **only when the glyph KEY SET is unchanged** (an edit). A changed key set is a STRUCTURAL op (`addGlyph`/`addGlyphs`/`deleteGlyph`/`loadGlyphs`) → **not recorded** (glyph create/delete are deliberately NOT undoable; delete is guarded by its confirm dialog). An `applying` re-entrancy flag keeps undo/redo from recording themselves.
 - `activeGlyphId` / `activeLayerId` are in `documentStore` but the history only ever diffs `glyphs`, so active-pointer changes never create a step.
 - **IMMUTABLE DATA (load-bearing — see Invariant 3's caches):** `Glyph`, `Layer`, `Contour`,
@@ -325,10 +340,9 @@ src/
   paint on operand **A** (the upper layer), else operand **B** (`firstPaint` in `layerFills.ts`);
   all-default operands stay paint-less (black), byte-identical to before. A **baked** layer renders
   its contours' OWN paint verbatim — merge (`mergeLayers.ts`), SVG import (`svgImport.ts`), and
-  expand-stroke (`editActions.ts`) each carry per-contour paint onto the baked contours. The one
-  exception: a baked **boolean-pair** result reverts to default-black, because the pair's inherited
-  paint lives on the fill GROUP, not on its contours, so the merge (which copies per-contour paint
-  only) drops it. (projectFile **v3** added
+  expand-stroke (`editActions.ts`) each carry per-contour paint onto the baked contours. A baked
+  **boolean-pair** result keeps its inherited colour too: the pair's paint lives on the fill GROUP,
+  so `bakeContours` stamps it onto the result contours (it used to drop it → black). (projectFile **v3** added
   the field; the v2→v3 migration is the identity. **v4** later added the per-contour `corner?` the
   same additive way — v3→v4 is also the identity. **v5** added the optional `Paint.gradient`
   (a two-stop linear gradient) the same additive way — v4→v5 is also the identity. **v6** added the
@@ -358,6 +372,22 @@ src/
 There are **two independent selections**:
 - **Layer selection** — `documentStore.selectedLayerIds` (always includes the active layer). Plain-click a panel row = select only it; **Ctrl/Cmd+click toggles** layers in/out (`toggleLayerSelection`); **Shift+click selects the inclusive range** from the active anchor to the clicked row (`selectLayerRange`, anchor stays active). Not undoable; pruned in `reconcileActive`; reset to the active layer on any plain activation / glyph switch. **The Pathfinder uses this:** when exactly two layers are selected, the Pathfinder bar offers the four ops on that pair. (The resulting pair itself is stored in `Glyph.booleanPairs`, not in the selection.)
 - **Anchor selection** — `editorStore.selection`, layer-aware `PointRef[]` (`{ layerId, contourId, pointId }`, `sameRef` compares all three). Drives **node editing**, and is **decoupled from the layer selection** (Illustrator-style): every selection op — single click (`hitTestLayers`), select-all (Ctrl+A), lasso, and marquee — works over **ALL visible + unlocked layers** (`editableLayers` in `tools/shared.ts`), regardless of which layer rows are in `selectedLayerIds` (that set only drives the Pathfinder). `EditOverlay` shows anchors for every editable layer (non-active dimmed). A node DRAG (select tool or lasso) now moves the **whole cross-layer selection** in one undo step (`originForRefs` + `replaceContoursEverywhere`); transform box / nudge / flip / align act cross-layer too. Clicking an anchor still activates its layer so NEW geometry lands there. The **LayersPanel tints every layer owning a selected node** (`.layer-row-involved`, a faint cue derived from `selection`'s `layerId`s) — deliberately weaker than the active/selected row styling, so the user sees which layers a cross-layer edit will touch without it competing with the Pathfinder selection.
+
+### 5b. Layer Groups (projectFile v8)
+- `glyph.layers` stays **FLAT** (paint order). Groups live beside it in `glyph.layerGroups`, nested via
+  `LayerGroup.parentId`; `features/layers/layerTree.ts` is the ONE definition of the tree (rows, ranges,
+  inherited visibility/lock). **CONTIGUITY:** a group's members are an unbroken run of `glyph.layers` —
+  every insert/move/merge must keep it (merge: the merged layer takes the LOWEST merged layer's slot
+  AND group).
+- **Locks/visibility are inherited**: use `effectiveLocked`/`effectiveVisible` (or `resolvedLayers`),
+  never a layer's own `locked`/`visible` alone — a raw check lets an edit reach into a locked group.
+- **`renderAsOne` is OPT-IN** (new groups are organisation-only): it bakes the members into ONE fill
+  region (`flattenRenderGroups` → `bakeContours`), which orders mixed colours by paint (the single-layer
+  rule) and makes a pair with one operand inside the group dormant. Making a group a Pathfinder operand
+  turns it on (`setBooleanPair`), and it can't be turned off while the pair exists.
+- The group **bake cache** (`cachedBake`) keys on the member contour arrays AND a signature of member
+  ids/baked flags + inner pairs (op/steps) + the geometry service; the canvas keeps unchanged layers'
+  contour arrays identical during a drag (`withOverrides`) so it actually hits.
 
 ### 6. Storage
 - All feature code talks only to `StorageService` KV interface
@@ -391,16 +421,36 @@ There are **two independent selections**:
   **New model fields (e.g. the future non-destructive `stroke?`) ship as a
   `version` bump + a `vN→vN+1` migration, not a format rewrite.** Keep new fields
   **optional** so old saves load untouched.
-  > **CURRENT persisted formats: projectFile = `v7`, settings = `v7`** (the source of truth is
+  > **CURRENT persisted formats: projectFile = `v8`, settings = `v7`** (the source of truth is
   > `CURRENT_VERSION` in `projectFile.ts` / `SETTINGS_VERSION` in `settingsFile.ts`). Throughout this
   > doc each field is annotated with the version it was **added in** (e.g. "projectFile v6 added blend");
-  > those are history, not the latest — `v7` is current for both.
+  > those are history, not the latest. projectFile **v8** added layer groups (`Layer.groupId` +
+  > `Glyph.layerGroups`, additive; v7→v8 is the identity — see 5b).
+  > Below the top-level checks (which decide reject vs accept), `migrate` runs **`sanitizeGlyph`**
+  > (`storage/sanitize.ts`): a structural REPAIR of anything that would throw while rendering (a layer
+  > without `contours`, a pair op the engine doesn't know, a point without finite x/y …). It **repairs,
+  > never rejects** — a rejected main falls back to the backup and is parked, which for a healthy-but-
+  > unusual save would look like data loss — and returns a healthy document as the SAME object.
 - **`state/persistence.ts` owns the lifecycle** (not the stores): `initPersistence()`
-  loads on launch (main → `…bak` backup → in-memory seed; an unreadable blob is
-  parked under `…corrupt`, not discarded) then starts a **debounced autosave** on
-  every `glyphs` change. `saveNow()` (File → Save / Ctrl-Cmd+S) flushes immediately.
-  Writes **double-buffer** (promote current main → backup before overwrite; KV has
-  no atomic rename). Status flows through the `useSaveStatus` store → `SaveStatus`.
+  (idempotent — StrictMode's double effect shares one run) loads on launch, then starts a
+  **debounced autosave** on every `glyphs` change, flushed when the page is hidden.
+  `saveNow()` (File → Save / Ctrl-Cmd+S) writes immediately. Status flows through the
+  `useSaveStatus` store → `SaveStatus` (states incl. **`paused`** = saving deliberately refused).
+  Load treats each slot (main, then `…bak`) by what went wrong — they need OPPOSITE handling:
+  - **missing** → nothing to lose: try the backup, else the in-memory seed.
+  - **invalid** (readable but unusable: corrupt shape, unknown version, or a `CorruptValueError` —
+    an undecodable value such as a half-written file) → **park** it under `…corrupt` (a second one goes
+    to `…corrupt.<ts>`, never over the first), then use the backup.
+  - **unreadable** (the read itself threw an I/O error, after 3 attempts) → the data may be fine, so
+    **autosave is paused** (`blockSaving`) — writing would replace the real document with whatever is
+    on screen. The backup is shown if readable. Reload retries.
+  Writes are **serialized** (a promise queue — autosave and Ctrl+S never interleave) and
+  **double-buffer**: the current main is promoted to the backup **only if it is itself a valid
+  project**, so a corrupt main can never overwrite a good backup. On desktop each `setItem` is
+  additionally **atomic** (`TauriStorage`: write `<key>.json.tmp`, then `rename` over the target; falls
+  back to a direct write if the rename is refused, so saving never breaks). A tab that can't claim the
+  workspace Web Lock (`tabLock.ts`) loads but never saves. "Import project…" confirms first and
+  snapshots the replaced workspace under `PREIMPORT_KEY` (outside the autosave rotation).
 - **A load is not an undo step:** restore via `documentStore.loadGlyphs` (which
   reuses `reconcileActive`), then `useHistoryStore.getState().clear()`
   so the restored document is the history baseline. (loadGlyphs changes the key set, so
@@ -1041,7 +1091,7 @@ dark/light/paper themes.)
 | i18n / language | **Open** — see "Future seams" → Tier 4 (deferred deliberately) |
 | Export (bulk u_xxxx.svg + universal scale) | **Shipped** — Phase 6; every glyph → `u_xxxx.svg`, universal scale %, web zip (fflate) / desktop folder write (Tauri); reuses `buildFillGroups` so output matches the canvas. Optional **Silhouette** toggle → flat solid black (no colour/gradient/opacity, holes preserved), `-silhouette`-tagged archive. Optional **Crop to artwork** toggle → the viewBox hugs each glyph's own ink (exact curve bounds) instead of the em square, so there is no empty frame — artwork use only, since it drops the shared baseline/sidebearings; `-cropped`-tagged archive. The web zip's **name is editable** in the modal (`exportNaming.ts`; blank = the auto `glyphs[-tag].svg.zip`, so the default is unchanged) — desktop is unaffected since the user picks a folder |
 | Synthetic Bold / Italic export | **Shipped** — `features/export/styleTransform.ts` + an Export-modal Style selector (Regular/Bold/Italic presets + Stretch %/Skew °/Outline-extension sliders). **Export-only** (source stays single-weight): fills are built UPRIGHT, then the skew/stretch is an **exact affine of the FINAL outline** (`transformContours`) — NOT a skeleton transform + stroke re-expansion (which re-exposed corner glitches); shearing finished beziers keeps sharp corners clean and counters intact (det>0 preserves CW-outer/CCW-hole). The fills also get an **x-only horizontal extension** (`extendOutlineX` — union/intersect of horizontally-shifted copies → bold thickens vertical stems only, height locked; negative thins, but the discrete intersect can facet sharp corners so Italic defaults to **skew-only**). `extendOutlineX` **splits CW outers from CCW holes** and smears each (grow ink + erode counters, then subtract) so counters DON'T fill solid (the geometry-service booleans flatten a contour set to a union of solids — feeding a whole annulus through `union` would lose the hole). Style-tagged archive name (`glyphs-bold/italic.svg.zip`) |
-| Robust/stable save (low corruption risk) | **Shipped** — single auto-persisted workspace; versioned format + `migrate()` seam, debounced autosave + File → Save (Ctrl/Cmd+S), double-buffered writes, main→backup→seed load fallback (see Invariant 7) |
+| Robust/stable save (low corruption risk) | **Shipped** — single auto-persisted workspace; versioned format + `migrate()` seam + load-time repair (`sanitize.ts`), serialized debounced autosave (flushed on tab hide) + File → Save (Ctrl/Cmd+S), double-buffered writes (atomic on desktop), main→backup→seed load fallback that pauses autosave rather than overwrite an unreadable save, one-writer tab lock, confirmed import with a pre-import snapshot (see Invariant 7) |
 | Portable project export/import (continue on another computer, web ⇄ desktop) | **Shipped** — File → Export/Import project… writes/reads one `.glphdrft` file (legacy `.glyphforge` still imports; the versioned `serializeProject` envelope) via `features/project/`; import reuses `migrate()` (corruption-safe) then `loadGlyphs` + `useHistoryStore…clear()` |
 | Vector-editing basics (nudge, duplicate, flip, reverse, zoom-fit, shift-constrain shapes) | **Shipped** — arrow nudge (Shift ×10), Ctrl/Cmd+D duplicate, flip H/V + reverse (right-click), Ctrl/Cmd+0 fit / Ctrl/Cmd+1 actual size; Shift → square/circle/regular/45° (`editActions.ts`, `shapes.ts`) |
 

@@ -56,7 +56,10 @@ export function parseTransform(s: string | null): Matrix {
   const re = /(matrix|translate|scale|rotate|skewX|skewY)\s*\(([^)]*)\)/g;
   let t: RegExpExecArray | null;
   while ((t = re.exec(s))) {
-    const a = t[2]!.split(/[\s,]+/).filter((x) => x.length).map(Number);
+    // parseFloat (not Number) so CSS-style units ("10px", "45deg") read as their
+    // number instead of NaN — a NaN here poisoned every point of the import.
+    const a = t[2]!.split(/[\s,]+/).filter((x) => x.length).map(parseFloat);
+    if (!a.every(Number.isFinite)) continue; // unparseable function → ignore it
     let next: Matrix = IDENTITY;
     switch (t[1]) {
       case "matrix":
@@ -90,7 +93,13 @@ export function parseTransform(s: string | null): Matrix {
 export function toPaint(fill: string | undefined, opacity: number): Paint | undefined {
   const f = fill?.trim();
   const lower = f?.toLowerCase();
-  const blackish = !f || lower === "black" || lower === "#000" || lower === "#000000";
+  // A paint server (`url(#gradient)`) or `currentColor` has no flat-colour equivalent
+  // here; passing it through made the shape INVISIBLE (the reference resolves to
+  // nothing in our document) and wrote an unresolvable fill into exported SVGs.
+  // Fall back to the default ink so the shape at least shows.
+  const unrepresentable = !!lower && (lower.startsWith("url(") || lower === "currentcolor");
+  const blackish =
+    !f || unrepresentable || lower === "black" || lower === "#000" || lower === "#000000";
   const p: Paint = {};
   if (f !== undefined && !blackish) p.fill = f; // a colour or "none" (keep original case)
   if (opacity !== 1) p.opacity = opacity;
@@ -122,9 +131,11 @@ function ellipseSubpath(cx: number, cy: number, rx: number, ry: number): ParsedS
 
 function pointList(s: string | null): Vec2[] {
   if (!s) return [];
-  const n = s.split(/[\s,]+/).filter((x) => x.length).map(Number);
+  const n = s.split(/[\s,]+/).filter((x) => x.length).map(parseFloat);
   const out: Vec2[] = [];
-  for (let i = 0; i + 1 < n.length; i += 2) out.push({ x: n[i]!, y: n[i + 1]! });
+  for (let i = 0; i + 1 < n.length; i += 2) {
+    if (Number.isFinite(n[i]) && Number.isFinite(n[i + 1])) out.push({ x: n[i]!, y: n[i + 1]! });
+  }
   return out;
 }
 
@@ -180,7 +191,7 @@ export function importSvg(svgText: string): Contour[] {
     const ctm2 = multiply(ctm, parseTransform(el.getAttribute("transform")));
     const f = attrOrStyle(el, "fill");
     const o = attrOrStyle(el, "fill-opacity");
-    const fill2 = f != null ? f : fill;
+    const fill2 = f != null && f.trim().toLowerCase() !== "inherit" ? f : fill;
     const opacity2 = o != null ? Math.min(1, Math.max(0, parseFloat(o) || 0)) : opacity;
 
     const subs = shapeSubpaths(el);

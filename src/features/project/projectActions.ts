@@ -1,7 +1,10 @@
+import type { Glyph } from "../../types/document";
 import { useDocumentStore } from "../../state/documentStore";
+import { useEditorStore } from "../../state/editorStore";
 import { useHistoryStore } from "../../state/history";
 import { saveNow, useSaveStatus } from "../../state/persistence";
-import { serializeProject, migrate } from "../../storage/projectFile";
+import { createStorage } from "../../storage/createStorage";
+import { serializeProject, migrate, PREIMPORT_KEY } from "../../storage/projectFile";
 import { createProjectIO } from "./ProjectIOService";
 
 /**
@@ -21,13 +24,10 @@ export function serializeCurrentProject(): string {
   return JSON.stringify(serializeProject(useDocumentStore.getState().glyphs));
 }
 
-/**
- * Replace the workspace with an imported project string. Parses + migrates; on
- * success loads it, clears history (so the import is the new baseline, not an undo
- * step), and persists it as the workspace. On any failure the document is left
- * untouched and an error is returned.
- */
-export function applyImportedProject(json: string): { ok: boolean; error?: string } {
+/** Parse + migrate a project string WITHOUT touching the document. */
+export function parseProject(
+  json: string,
+): { ok: true; glyphs: Record<string, Glyph> } | { ok: false; error: string } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
@@ -36,12 +36,46 @@ export function applyImportedProject(json: string): { ok: boolean; error?: strin
   }
   const glyphs = migrate(parsed);
   if (!glyphs) return { ok: false, error: "Not a valid Glyph Draft project." };
+  return { ok: true, glyphs };
+}
 
-  const store = useDocumentStore.getState();
-  store.loadGlyphs(glyphs);
+/** Load glyphs as the new workspace: history cleared (the import is the baseline, not
+ *  an undo step), editor gestures/selection dropped (they point into the old
+ *  document), and the result persisted. */
+function loadAsWorkspace(glyphs: Record<string, Glyph>): void {
+  useDocumentStore.getState().loadGlyphs(glyphs);
   useHistoryStore.getState().clear();
-  void saveNow(); // persist the imported document as the current workspace
+  useEditorStore.getState().resetEphemeral();
+  void saveNow();
+}
+
+/**
+ * Replace the workspace with an imported project string, immediately. On failure
+ * the document is left untouched and an error is returned. The UI goes through
+ * `pickProject` + `replaceWorkspace` instead (confirmation + pre-import snapshot);
+ * this synchronous form is the tested core.
+ */
+export function applyImportedProject(json: string): { ok: boolean; error?: string } {
+  const parsed = parseProject(json);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+  loadAsWorkspace(parsed.glyphs);
   return { ok: true };
+}
+
+/**
+ * Replace the workspace with already-validated glyphs, after snapshotting the
+ * current one under PREIMPORT_KEY. The autosave rotation would otherwise push the old
+ * workspace out of both slots within one more save, making an import irreversible.
+ * The snapshot is best-effort: the user has already confirmed the replacement.
+ */
+export async function replaceWorkspace(glyphs: Record<string, Glyph>): Promise<void> {
+  try {
+    const storage = await createStorage();
+    await storage.setItem(PREIMPORT_KEY, serializeProject(useDocumentStore.getState().glyphs));
+  } catch {
+    /* best-effort */
+  }
+  loadAsWorkspace(glyphs);
 }
 
 /** File → Export project… — serialize and hand off to the platform writer. */
@@ -57,8 +91,20 @@ export async function exportProject(): Promise<void> {
   }
 }
 
-/** File → Import project… — pick a file, then replace the workspace with it. */
-export async function importProject(): Promise<void> {
+/** A picked + validated project waiting for the user to confirm the replacement. */
+export interface PendingImport {
+  glyphs: Record<string, Glyph>;
+  glyphCount: number;
+}
+
+/**
+ * File → Import project… step 1: pick a file and validate it. Returns the pending
+ * import for the caller to CONFIRM (then `replaceWorkspace`), or null when cancelled
+ * or invalid (the error is shown in the header). Never touches the document.
+ * Confirmation comes AFTER the pick, so the web file picker still opens inside the
+ * menu click's user gesture.
+ */
+export async function pickProject(): Promise<PendingImport | null> {
   const io = await createProjectIO();
   let result;
   try {
@@ -68,12 +114,14 @@ export async function importProject(): Promise<void> {
       state: "error",
       error: err instanceof Error ? err.message : "Import failed",
     });
-    return;
+    return null;
   }
-  if (result.cancelled || result.json == null) return;
+  if (result.cancelled || result.json == null) return null;
 
-  const applied = applyImportedProject(result.json);
-  if (!applied.ok) {
-    useSaveStatus.setState({ state: "error", error: applied.error ?? "Import failed" });
+  const parsed = parseProject(result.json);
+  if (!parsed.ok) {
+    useSaveStatus.setState({ state: "error", error: parsed.error });
+    return null;
   }
+  return { glyphs: parsed.glyphs, glyphCount: Object.keys(parsed.glyphs).length };
 }

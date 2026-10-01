@@ -21,6 +21,14 @@ import type { Command, KeyChord } from "./types";
  */
 
 /** After an undo/redo, repair the active pointers and drop transient state. */
+/** Undo/redo are refused while a drag preview is live: the gesture holds a snapshot
+ *  of the pre-undo contours and would re-commit it on pointer-up, silently undoing
+ *  the undo. (Every drag-preview tool — select, lasso, transform box — previews
+ *  through `liveContours`.) */
+function noGestureInFlight(): boolean {
+  return useEditorStore.getState().liveContours === null;
+}
+
 function afterHistory(): void {
   useDocumentStore.getState().reconcileActive();
   useEditorStore.getState().resetEphemeral();
@@ -55,7 +63,7 @@ const editCommands: Command[] = [
       useHistoryStore.getState().undo();
       afterHistory();
     },
-    isEnabled: () => useHistoryStore.getState().pastStates.length > 0,
+    isEnabled: () => useHistoryStore.getState().pastStates.length > 0 && noGestureInFlight(),
   },
   {
     id: "edit.redo",
@@ -69,7 +77,7 @@ const editCommands: Command[] = [
       useHistoryStore.getState().redo();
       afterHistory();
     },
-    isEnabled: () => useHistoryStore.getState().futureStates.length > 0,
+    isEnabled: () => useHistoryStore.getState().futureStates.length > 0 && noGestureInFlight(),
   },
   {
     id: "edit.cut",

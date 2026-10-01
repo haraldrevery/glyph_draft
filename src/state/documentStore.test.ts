@@ -1209,12 +1209,59 @@ describe("layer groups", () => {
 
     it("refuses to cross out of its parent", () => {
       // inner sits inside outer; moving it up must not escape outer.
+      // (This used to assert the FIRST move was a no-op — but b is a sibling layer in
+      // outer, so swapping with it is a legal within-parent move; the old no-op was
+      // the "can't move a nested group past a sibling layer" bug. The escape guard is
+      // the SECOND move, whose neighbour c is outside outer.)
       seedLayers(["a", "b", "c"]);
-      state().groupLayers(["a", "b"]);
+      const outer = state().groupLayers(["a", "b"])!;
       const inner = state().groupLayers(["a"])!;
+      state().moveGroup(inner, "up"); // past sibling b — stays inside outer
+      expect(order()).toEqual(["b", "a", "c"]);
+      expect(findGroup(g(), inner)?.parentId).toBe(outer);
       const before = order();
-      state().moveGroup(inner, "up");
+      state().moveGroup(inner, "up"); // next neighbour c is outside outer → refused
       expect(order()).toEqual(before);
+      expect(isContiguous(g(), outer)).toBe(true);
     });
   });
 });
+
+describe("moveGroup past a sibling LAYER (regression)", () => {
+  // P holds a plain layer x and a nested group Q. Moving Q down past x used to be a
+  // silent no-op: the sibling lookup only considered GROUPS under the same parent.
+  it("swaps a nested group with a layer of the same parent", () => {
+    const L = (id: string, groupId: string): Layer => ({
+      id,
+      name: id,
+      visible: true,
+      locked: false,
+      contours: [],
+      groupId,
+    });
+    const glyph: Glyph = {
+      id: "G",
+      codepoint: 0x41,
+      name: "A",
+      advanceWidth: 600,
+      layers: [L("x", "P"), L("q1", "Q")],
+      layerGroups: [
+        { id: "P", name: "P", visible: true, locked: false },
+        { id: "Q", name: "Q", visible: true, locked: false, parentId: "P" },
+      ],
+    };
+    useDocumentStore.setState({
+      glyphs: { G: glyph },
+      activeGlyphId: "G",
+      activeLayerId: "q1",
+      selectedLayerIds: ["q1"],
+      activeGroupId: null,
+    });
+    useDocumentStore.getState().moveGroup("Q", "down");
+    const g = useDocumentStore.getState().glyphs.G!;
+    expect(g.layers.map((l) => l.id)).toEqual(["q1", "x"]);
+    expect(isContiguous(g, "P")).toBe(true);
+    expect(isContiguous(g, "Q")).toBe(true);
+  });
+});
+

@@ -1,4 +1,5 @@
 import { createStorage } from "../storage/createStorage";
+import { CorruptValueError } from "../storage/StorageService";
 import { useViewportStore } from "./viewportStore";
 import { useOnionStore } from "./onionStore";
 import { useKeybindingStore } from "./keybindingStore";
@@ -118,8 +119,17 @@ export async function initSettings(): Promise<void> {
         /* best-effort */
       }
     }
-  } catch {
-    /* storage unavailable — keep defaults */
+  } catch (err) {
+    // Undecodable (e.g. a half-written file): park the raw text like any other
+    // unreadable blob. Otherwise storage is unavailable — keep defaults.
+    if (err instanceof CorruptValueError) {
+      try {
+        const storage = await createStorage();
+        await storage.setItem(SETTINGS_CORRUPT_KEY, err.raw);
+      } catch {
+        /* best-effort */
+      }
+    }
   }
 
   ready = true;

@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { useDocumentStore } from "./documentStore";
-import { useHistoryStore } from "./history";
+import { useHistoryStore, coalesceNextEdit } from "./history";
 import type { Glyph } from "../types/document";
 
 /**
@@ -85,3 +85,65 @@ describe("per-glyph undo/redo", () => {
     expect(doc().glyphs["B"]).toBeUndefined();
   });
 });
+
+describe("gesture coalescing (one slider drag = one undo step)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  const drag = (tag: string, values: number[]) => {
+    for (const v of values) {
+      coalesceNextEdit(tag);
+      doc().setAdvanceWidth(v);
+    }
+  };
+
+  it("collapses a continuous drag into ONE step", () => {
+    doc().setActiveGlyph("A");
+    drag("slider-1", [601, 602, 603, 650, 700]);
+    expect(hist().pastStates).toHaveLength(1);
+    hist().undo();
+    expect(aw("A")).toBe(600); // the whole drag reverts
+  });
+
+  it("never merges a tagged drag with an untagged edit around it", () => {
+    doc().setActiveGlyph("A");
+    doc().setAdvanceWidth(610); // plain edit
+    drag("slider-1", [620, 630]);
+    doc().setAdvanceWidth(640); // plain edit
+    expect(hist().pastStates).toHaveLength(3);
+  });
+
+  it("two different controls are two steps", () => {
+    doc().setActiveGlyph("A");
+    drag("slider-1", [610, 620]);
+    drag("slider-2", [630, 640]);
+    expect(hist().pastStates).toHaveLength(2);
+  });
+
+  it("a pause longer than the window starts a new step", () => {
+    vi.useFakeTimers();
+    doc().setActiveGlyph("A");
+    drag("slider-1", [610]);
+    vi.advanceTimersByTime(1500);
+    drag("slider-1", [620]);
+    expect(hist().pastStates).toHaveLength(2);
+  });
+
+  it("a change after an undo starts a new step", () => {
+    doc().setActiveGlyph("A");
+    drag("slider-1", [610, 620]);
+    hist().undo();
+    drag("slider-1", [630]);
+    expect(hist().pastStates).toHaveLength(1);
+    expect(hist().futureStates).toHaveLength(0);
+  });
+
+  it("an unconsumed tag expires: it can't merge a LATER unrelated edit", async () => {
+    doc().setActiveGlyph("A");
+    drag("slider-1", [610]);
+    coalesceNextEdit("slider-1"); // e.g. the slider didn't change the document
+    await Promise.resolve(); // end of task → the mark is dropped
+    doc().setAdvanceWidth(620); // unrelated, untagged
+    expect(hist().pastStates).toHaveLength(2);
+  });
+});
+

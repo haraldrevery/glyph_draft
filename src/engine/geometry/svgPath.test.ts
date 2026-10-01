@@ -56,3 +56,26 @@ describe("parsePathD", () => {
     expect(pts[0]!.handleOut).toBeDefined(); // arc became a curve, not a line
   });
 });
+
+describe("parsePathD — drawing after Z / without M (regression)", () => {
+  // Valid SVG: after Z a drawing command continues from the closed subpath's start.
+  // This used to throw ("Cannot read properties of null"), failing the whole import.
+  it("continues a new subpath from the closed subpath's start", () => {
+    const subs = parsePathD("M0 0 L10 0 L10 10 Z L 20 20 L 30 0");
+    expect(subs.map((s) => s.closed)).toEqual([true, false]);
+    expect(subs[1]!.points[0]).toMatchObject({ x: 0, y: 0 });
+    expect(subs[1]!.points.at(-1)).toMatchObject({ x: 30, y: 0 });
+  });
+
+  it("relative commands after z are relative to the subpath start", () => {
+    const subs = parsePathD("M10 10 l10 0 l0 10 z l 5 5");
+    expect(subs[1]!.points.map((p) => [p.x, p.y])).toEqual([
+      [10, 10],
+      [15, 15],
+    ]);
+  });
+
+  it("garbage (an `a` inside `NaN`) never throws", () => {
+    expect(() => parsePathD("M NaN 0 L 1 1")).not.toThrow();
+  });
+});

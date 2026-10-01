@@ -1,4 +1,4 @@
-import type { StorageService } from "./StorageService";
+import { CorruptValueError, type StorageService } from "./StorageService";
 
 /**
  * Desktop implementation: a key/value store implemented over the Tauri v2
@@ -17,6 +17,8 @@ type FsModule = typeof import("@tauri-apps/plugin-fs");
 
 const ROOT_DIR = "storage";
 const EXT = ".json";
+/** Suffix of the scratch file a write lands in before it is renamed over the target. */
+const TMP = ".tmp";
 
 export class TauriStorage implements StorageService {
   private fsPromise: Promise<FsModule> | null = null;
@@ -50,14 +52,38 @@ export class TauriStorage implements StorageService {
     const path = this.pathFor(key);
     if (!(await mod.exists(path, { baseDir: this.baseDir }))) return null;
     const text = await mod.readTextFile(path, { baseDir: this.baseDir });
-    return JSON.parse(text) as T;
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      // A value IS there but can't be decoded — typically a write cut short by a
+      // crash. Distinct from an I/O error so the caller can fall back to the backup.
+      throw new CorruptValueError(key, text);
+    }
   }
 
+  /**
+   * Write-then-rename, so a crash mid-write can never leave a truncated file under
+   * the real name: the old file stays intact until the complete new one replaces it
+   * (rename() replaces an existing target). If the rename is refused — e.g. a build
+   * whose capabilities predate `fs:allow-rename` — fall back to the direct write
+   * rather than failing every save.
+   */
   async setItem<T>(key: string, value: T): Promise<void> {
     const mod = await this.fs();
-    await mod.writeTextFile(this.pathFor(key), JSON.stringify(value), {
-      baseDir: this.baseDir,
-    });
+    const path = this.pathFor(key);
+    const text = JSON.stringify(value);
+    const opts = { baseDir: this.baseDir };
+    await mod.writeTextFile(path + TMP, text, opts);
+    try {
+      await mod.rename(path + TMP, path, {
+        oldPathBaseDir: this.baseDir,
+        newPathBaseDir: this.baseDir,
+      });
+    } catch (err) {
+      console.warn("Atomic save unavailable, writing in place:", err);
+      await mod.writeTextFile(path, text, opts);
+      await mod.remove(path + TMP, opts).catch(() => undefined);
+    }
   }
 
   async removeItem(key: string): Promise<void> {

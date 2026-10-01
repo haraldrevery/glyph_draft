@@ -1,4 +1,5 @@
 import type { Glyph } from "../types/document";
+import { sanitizeGlyph } from "./sanitize";
 
 /**
  * The on-disk project format and its migration seam. The whole point of building
@@ -23,6 +24,9 @@ export const STORAGE_KEY = "glyphdraft:project";
 export const BACKUP_KEY = "glyphdraft:project.bak";
 /** Where an unreadable blob is parked on load (never silently discarded). */
 export const CORRUPT_KEY = "glyphdraft:project.corrupt";
+/** The workspace as it was just before the last "Import project…" replaced it — the
+ *  autosave rotation never touches this key, so an import is always recoverable. */
+export const PREIMPORT_KEY = "glyphdraft:project.preimport";
 
 export interface ProjectFileV1 {
   version: 1;
@@ -102,23 +106,36 @@ function isRecord(x: unknown): x is Record<string, unknown> {
   return typeof x === "object" && x !== null;
 }
 
-/** A defensive, shallow shape check — enough to reject corruption, not a full schema. */
+/** The top-level shape check that decides REJECT vs accept: a glyph without these
+ *  is not a glyph at all. Everything below it is repaired, not rejected (sanitize.ts). */
 function isValidGlyph(g: unknown): g is Glyph {
   return (
     isRecord(g) &&
     typeof g.id === "string" &&
     typeof g.codepoint === "number" &&
+    Number.isFinite(g.codepoint) &&
     Array.isArray(g.layers)
   );
 }
 
-/** Accept an object only if it is a non-empty map of valid glyphs. */
+/**
+ * Accept an object only if it is a non-empty map of valid glyphs, then repair the
+ * inside of each glyph (`sanitizeGlyph`) so nothing that loads can crash the renderer.
+ * A healthy document comes back as the SAME object.
+ */
 function asGlyphMap(x: unknown): Record<string, Glyph> | null {
   if (!isRecord(x)) return null;
-  const values = Object.values(x);
-  if (values.length === 0) return null; // a real document always has ≥1 glyph
-  if (!values.every(isValidGlyph)) return null;
-  return x as Record<string, Glyph>;
+  const entries = Object.entries(x);
+  if (entries.length === 0) return null; // a real document always has ≥1 glyph
+  if (!entries.every(([, g]) => isValidGlyph(g))) return null;
+  let changed = false;
+  const out: Record<string, Glyph> = {};
+  for (const [key, g] of entries) {
+    const repaired = sanitizeGlyph(key, g as Glyph);
+    if (repaired !== g) changed = true;
+    out[key] = repaired;
+  }
+  return changed ? out : (x as Record<string, Glyph>);
 }
 
 /**

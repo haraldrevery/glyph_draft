@@ -1,4 +1,5 @@
-import { useRef, type PointerEvent as ReactPointerEvent } from "react";
+import { useId, useRef, type PointerEvent as ReactPointerEvent } from "react";
+import { coalesceNextEdit } from "../../state/history";
 
 interface KnobProps {
   /** Angle in degrees, screen-clockwise from +x (0 = pointing right, 90 = down). */
@@ -15,12 +16,14 @@ interface KnobProps {
  */
 export function Knob({ value, onChange, label }: KnobProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const gesture = useId(); // a drag's many changes = one undo step
 
   const setFromPoint = (clientX: number, clientY: number) => {
     const el = ref.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
     const deg = (Math.atan2(clientY - (r.top + r.height / 2), clientX - (r.left + r.width / 2)) * 180) / Math.PI;
+    coalesceNextEdit(gesture);
     onChange((Math.round(deg) + 360) % 360);
   };
 

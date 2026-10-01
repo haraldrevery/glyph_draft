@@ -21,19 +21,47 @@ import type { Glyph } from "../types/document";
  */
 
 const LIMIT = 200;
+/** Max gap between two changes of one continuous gesture (a slider drag) for them to
+ *  share an undo step. A longer pause starts a new step. */
+const COALESCE_MS = 1000;
 
 interface GlyphHistory {
   past: Glyph[];
   future: Glyph[];
+  /** Coalescing tag + time of the LAST recorded change (null tag = a plain edit). */
+  lastTag: string | null;
+  lastAt: number;
 }
 
 const stacks = new Map<string, GlyphHistory>();
 let applying = false; // true while undo/redo applies a change (so it isn't recorded)
+/** Tag for the NEXT recorded change, set by `coalesceNextEdit`; expires at the end of
+ *  the current task. */
+let pendingTag: string | null = null;
+
+/**
+ * Mark the next document change as part of a continuous gesture identified by `tag`
+ * (one per control instance — a slider, colour picker, knob). Consecutive changes with
+ * the same tag on the same glyph, each within COALESCE_MS of the previous, collapse
+ * into ONE undo step: a slider drag fires an input event per pixel, and recording each
+ * one would flood the 200-step history and push real drawing steps out of it.
+ *
+ * There is deliberately no begin/end pairing: a missed "end" (pointer released
+ * outside the window) would merge unrelated edits. Instead the mark is consumed by
+ * the change it precedes, and dropped at the end of the task if no change follows,
+ * so it can never attach to a later, unrelated edit.
+ */
+export function coalesceNextEdit(tag: string): void {
+  pendingTag = tag;
+  queueMicrotask(() => {
+    pendingTag = null;
+  });
+}
 
 function stackFor(id: string): GlyphHistory {
   let s = stacks.get(id);
   if (!s) {
-    s = { past: [], future: [] };
+    s = { past: [], future: [], lastTag: null, lastAt: 0 };
     stacks.set(id, s);
   }
   return s;
@@ -42,16 +70,27 @@ function stackFor(id: string): GlyphHistory {
 /** Record per-glyph diffs, but ONLY when the glyph key set is unchanged (an edit).
  *  A changed key set = a structural op (add/delete/load) → no undo step. */
 function record(prev: Record<string, Glyph>, next: Record<string, Glyph>): void {
+  const tag = pendingTag;
+  pendingTag = null; // consumed by this change
   const nextKeys = Object.keys(next);
   if (nextKeys.length !== Object.keys(prev).length) return; // added/removed a glyph
   for (const k of nextKeys) if (!(k in prev)) return; // key set changed (swap)
+  const now = Date.now();
   for (const k of nextKeys) {
     const before = prev[k]!;
     if (before !== next[k]) {
       const st = stackFor(k);
-      st.past.push(before);
-      if (st.past.length > LIMIT) st.past.shift();
+      // Same continuous gesture as the last change → keep ITS "before" snapshot, so
+      // one Ctrl+Z reverts the whole drag.
+      const sameGesture =
+        tag !== null && st.lastTag === tag && now - st.lastAt <= COALESCE_MS && st.past.length > 0;
+      if (!sameGesture) {
+        st.past.push(before);
+        if (st.past.length > LIMIT) st.past.shift();
+      }
       st.future.length = 0; // a fresh edit invalidates redo
+      st.lastTag = tag;
+      st.lastAt = now;
     }
   }
 }
@@ -77,6 +116,7 @@ export const useHistoryStore = create<HistoryState>(() => ({
     if (!id || !cur || !st || st.past.length === 0) return;
     st.future.push(cur);
     const prev = st.past.pop()!;
+    st.lastTag = null; // a change after an undo starts a new step
     applying = true;
     useDocumentStore.setState({ glyphs: { ...doc.glyphs, [id]: prev } });
     applying = false; // the subscribe ran synchronously above; refresh() fired there
@@ -90,6 +130,7 @@ export const useHistoryStore = create<HistoryState>(() => ({
     if (!id || !cur || !st || st.future.length === 0) return;
     st.past.push(cur);
     const next = st.future.pop()!;
+    st.lastTag = null;
     applying = true;
     useDocumentStore.setState({ glyphs: { ...doc.glyphs, [id]: next } });
     applying = false;

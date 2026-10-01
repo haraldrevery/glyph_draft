@@ -247,3 +247,16 @@ describe("glyphToSvg", () => {
     expect(moves.length).toBeGreaterThanOrEqual(2); // outer + hole
   });
 });
+
+describe("glyphToSvg attribute escaping (regression)", () => {
+  it("a quote in a fill colour can't break the exported XML", () => {
+    const svg = glyphToSvg(glyph([layer("L", [{ ...BIG, paint: { fill: 'red" onload="x' } }])]), DEFAULT_METRICS);
+    expect(svg).toContain('fill="red&quot; onload=&quot;x"');
+    expect(svg).not.toContain('onload="x"');
+  });
+
+  it("an ordinary hex colour is emitted unchanged", () => {
+    const svg = glyphToSvg(glyph([layer("L", [{ ...BIG, paint: { fill: "#ff0000" } }])]), DEFAULT_METRICS);
+    expect(svg).toContain('fill="#ff0000"');
+  });
+});

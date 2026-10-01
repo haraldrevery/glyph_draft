@@ -192,7 +192,8 @@ export function GlyphSidebar() {
             onMouseDown={(e) => e.stopPropagation()}
           >
             <p className="confirm-message">
-              Delete glyph “{glyphLabel(confirmDelete.codepoint)}”? This can be undone.
+              Delete glyph “{glyphLabel(confirmDelete.codepoint)}” and all its layers? This
+              can’t be undone.
             </p>
             <div className="confirm-actions">
               <button type="button" className="btn" onClick={() => setConfirmDelete(null)}>

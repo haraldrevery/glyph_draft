@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import { useViewportStore } from "./state/viewportStore";
-import { initPersistence, saveNow } from "./state/persistence";
-import { exportProject, importProject } from "./features/project/projectActions";
+import { initPersistence, saveNow, useSaveStatus } from "./state/persistence";
+import {
+  exportProject,
+  pickProject,
+  replaceWorkspace,
+  type PendingImport,
+} from "./features/project/projectActions";
 import { initSettings } from "./state/settings";
 import { useCommandKeys } from "./commands";
 import { SaveStatus } from "./components/SaveStatus";
@@ -19,6 +24,7 @@ import { GLYPH_SETS } from "./features/glyphs/glyphSets";
 import { useDocumentStore } from "./state/documentStore";
 import { useEditorStore } from "./state/editorStore";
 import { importSvg } from "./features/import/svgImport";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 /**
  * Application shell. Holds the app-level effects and otherwise delegates the
@@ -59,6 +65,10 @@ export default function App() {
   const [keysOpen, setKeysOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [infoSection, setInfoSection] = useState<InfoSection | null>(null);
+  // A picked, validated project waiting for the user to confirm it may REPLACE the
+  // workspace (the import is destructive: everything currently open is swapped out).
+  const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
+  const currentGlyphCount = useDocumentStore((s) => Object.keys(s.glyphs).length);
 
   useCommandKeys();
 
@@ -72,12 +82,20 @@ export default function App() {
       const file = input.files?.[0];
       input.remove();
       if (!file) return;
-      void file.text().then((text) => {
-        const contours = importSvg(text);
-        if (contours.length === 0) return; // nothing importable
-        useDocumentStore.getState().addImportedLayer(contours, `Imported · ${file.name.replace(/\.svg$/i, "")}`);
-        useEditorStore.getState().resetEphemeral();
-      });
+      // Failures used to vanish (an unhandled rejection / a silent return): report
+      // them in the header like the other file operations.
+      const fail = (error: string) => useSaveStatus.setState({ state: "error", error });
+      file
+        .text()
+        .then((text) => {
+          const contours = importSvg(text);
+          if (contours.length === 0) return fail(`Nothing importable in ${file.name}`);
+          useDocumentStore.getState().addImportedLayer(contours, `Imported · ${file.name.replace(/\.svg$/i, "")}`);
+          useEditorStore.getState().resetEphemeral();
+        })
+        .catch((err: unknown) =>
+          fail(`Couldn't import ${file.name}: ${err instanceof Error ? err.message : "unreadable SVG"}`),
+        );
     });
     document.body.appendChild(input);
     input.click();
@@ -105,7 +123,10 @@ export default function App() {
             <MenuItem label="Save" onSelect={() => void saveNow()} />
             <MenuItem label="Export…" onSelect={() => setExportOpen(true)} />
             <MenuItem label="Export project…" onSelect={() => void exportProject()} />
-            <MenuItem label="Import project…" onSelect={() => void importProject()} />
+            <MenuItem
+              label="Import project…"
+              onSelect={() => void pickProject().then((p) => p && setPendingImport(p))}
+            />
             <MenuItem label="Import SVG…" onSelect={handleImportSvg} />
           </Menu>
           <Menu label="View">
@@ -183,7 +204,59 @@ export default function App() {
       </main>
       <ExportModal open={exportOpen} onClose={() => setExportOpen(false)} />
       <KeybindingsModal open={keysOpen} onClose={() => setKeysOpen(false)} />
-      <TextPreviewModal open={previewOpen} onClose={() => setPreviewOpen(false)} />
+      <ErrorBoundary
+        resetKey={previewOpen}
+        fallback={(err) => (
+          <div className="modal-overlay" role="presentation" onMouseDown={() => setPreviewOpen(false)}>
+            <div className="text-preview-modal" role="alertdialog" aria-modal="true">
+              <p>The preview couldn't be drawn: {err.message}</p>
+              <button type="button" className="btn" onClick={() => setPreviewOpen(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        )}
+      >
+        <TextPreviewModal open={previewOpen} onClose={() => setPreviewOpen(false)} />
+      </ErrorBoundary>
+      {pendingImport && (
+        <div className="modal-overlay" role="presentation" onMouseDown={() => setPendingImport(null)}>
+          <div
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Replace workspace"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <p className="confirm-message">
+              Replace the current workspace ({currentGlyphCount} glyph
+              {currentGlyphCount === 1 ? "" : "s"}) with the imported project (
+              {pendingImport.glyphCount} glyph{pendingImport.glyphCount === 1 ? "" : "s"})? Undo
+              history is cleared and this can’t be undone. Export the current project first if you
+              want to keep it.
+            </p>
+            <div className="confirm-actions">
+              <button type="button" className="btn" onClick={() => setPendingImport(null)}>
+                Cancel
+              </button>
+              <button type="button" className="btn" onClick={() => void exportProject()}>
+                Export current first…
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={() => {
+                  const p = pendingImport;
+                  setPendingImport(null);
+                  void replaceWorkspace(p.glyphs);
+                }}
+              >
+                Replace
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <InfoModal
         open={infoSection !== null}
         section={infoSection ?? "about"}
