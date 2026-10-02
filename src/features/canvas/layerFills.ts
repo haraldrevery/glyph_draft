@@ -1,10 +1,11 @@
 import { DEFAULT_HALFTONE, type Contour, type GradientFill, type Paint } from "../../types/geometry";
-import type { BooleanPair, Glyph, LayerGroup } from "../../types/document";
+import type { BooleanOp, BooleanPair, Glyph, LayerGroup } from "../../types/document";
 import type { GeometryService } from "../../engine/geometry/GeometryService";
 import { ensureWinding } from "../../engine/geometry/path";
 import { withCorners } from "../../engine/geometry/corners";
 import { blendContours } from "../../engine/geometry/blend";
 import { resolvedLayers } from "../layers/layerTree";
+import { DEFAULT_INK, isDefaultInk } from "../../engine/paint/paint";
 
 /** Default in-between steps for a Blend pair when the UI hasn't set one. */
 const DEFAULT_BLEND_STEPS = 4;
@@ -32,8 +33,10 @@ const DEFAULT_BLEND_STEPS = 4;
 export interface FillLayer {
   id: string;
   contours: Contour[];
-  /** A baked/merged layer: render its contours as-is (winding preserved, no
-   *  stroke expansion, no force-CW). See Layer.baked. */
+  /** Render EVERY contour of this layer verbatim (winding preserved, no stroke
+   *  expansion, no force-CW). Internal to the render pipeline — set only on the synthetic
+   *  layer a render-as-one group collapses into, whose contours are already final.
+   *  Document data marks baked geometry per contour instead (`Contour.baked`). */
   baked?: boolean;
   /** The layer's group, if any — read by `flattenRenderGroups` to collapse a
    *  `renderAsOne` group into a single synthetic layer. */
@@ -119,9 +122,10 @@ function groupByPaint(layerId: string, contours: Contour[]): FillGroup[] {
   });
 }
 
-/** A halftone-stroked contour (the only kind the "merge halftones" setting groups). */
+/** A halftone-stroked contour (the only kind the "merge halftones" setting groups). A
+ *  baked contour renders verbatim, so its stroke (if any) is never expanded. */
 function isHalftone(c: Contour): boolean {
-  return !!c.stroke && c.stroke.model === "halftone";
+  return !c.baked && !!c.stroke && c.stroke.model === "halftone";
 }
 
 // Stable ids for svg `pattern` arrays so two halftones merge only when they share the
@@ -138,8 +142,9 @@ function patternId(pattern: object): number {
 }
 
 /** Signature that buckets IDENTICAL-style halftone contours: the stroke fields that shape
- *  the body (width/join/miter/caps) + the halftone params + the paint. Same signature ⇒
- *  the paths render as one combined halftone (`expandHalftoneGroup`). */
+ *  the body (width/join/miter/caps) + the halftone params + the OUTLINE paint the dots are
+ *  drawn in (`strokeOutlinePaint` — the stroke's own colour/gradient, else the legacy fill
+ *  paint). Same signature ⇒ the paths render as one combined halftone. */
 function halftoneKey(c: Contour): string {
   const s = c.stroke!;
   const h = s.halftone ?? DEFAULT_HALFTONE;
@@ -151,7 +156,7 @@ function halftoneKey(c: Contour): string {
     ec: s.endCap,
     h: { c: h.cell, s: h.size, a: h.angle, sh: h.shape, ct: h.contrast ?? 0.5 },
     pat: h.pattern ? patternId(h.pattern) : 0,
-    paint: c.paint ?? null,
+    paint: strokeOutlinePaint(c) ?? null,
   });
 }
 
@@ -170,38 +175,95 @@ function resolveGradient(g: GradientFill, c: Contour): GradientFill {
 
 /** The paint for a stroked contour's outline: its own `color`/`gradient` (a gradient
  *  always pins a concrete first-stop `fill` so grouping keeps it), else the legacy
- *  fallback to the contour's `paint`. */
+ *  fallback to the contour's `paint`. A black stroke colour is the DEFAULT INK (no
+ *  paint) — the same rule fills follow — so it draws in the theme's ink on the canvas,
+ *  not as near-invisible literal black on the dark theme. (Export: black either way.) */
 function strokeOutlinePaint(c: Contour): Paint | undefined {
   const s = c.stroke!;
   if (s.gradient) {
-    const fill = s.color ?? c.paint?.fill ?? "#000000";
+    const fill = s.color ?? c.paint?.fill ?? DEFAULT_INK;
     return { fill, gradient: resolveGradient(s.gradient, c) };
   }
-  return s.color ? { fill: s.color } : c.paint;
+  if (s.color === undefined) return c.paint; // legacy: the outline follows the fill paint
+  return isDefaultInk(s.color) ? undefined : { fill: s.color };
 }
 
 /**
- * A layer's fillable contours. Fill and stroke are INDEPENDENT: a closed path can
- * emit its CW interior fill (when `filled`) AND its stroke outline (when `stroke`) —
- * two separate groups. `filled` defaults to the legacy rule (closed, unstroked, not
- * Transparent), so without the new fields the output is byte-identical: a stroked
- * path is outline-only, an unstroked closed path is a solid CW fill. A stroked path's
- * outline still carries a CCW hole; holes within a plain layer come from a stroke or a
- * between-layer Subtract — never from winding.
+ * Everything ONE contour renders to — the single definition of a contour's appearance.
+ * The layer pipeline (`renderContours`) and Expand stroke both use it, so an expanded
+ * stroke is exactly what the canvas showed. (Expand once re-implemented this and drifted:
+ * it painted the outline with the FILL colour and dropped a filled path's interior.)
+ *
+ *  - baked → the contour itself, verbatim (its winding — so its holes — kept);
+ *  - its INTERIOR, when `filled` (undefined ⇒ the legacy rule: closed, unstroked, not
+ *    Transparent) → the contour forced CW, carrying `paint`;
+ *  - its STROKE OUTLINE, when stroked → the expanded outline, painted by
+ *    `strokeOutlinePaint` (the stroke's own colour/gradient, else the legacy fill paint).
+ *
+ * Fill and stroke are INDEPENDENT, so a closed path can emit both. Corner rounding runs
+ * first, so the rounded centerline feeds the fill and the stroke alike. `stroke: false`
+ * leaves the outline out (the merged-halftone pre-pass draws it for the whole bucket).
+ */
+export function renderContour(
+  raw: Contour,
+  geom: GeometryService,
+  { stroke = true }: { stroke?: boolean } = {},
+): Contour[] {
+  if (raw.baked) return [raw];
+  if (raw.points.length < 2) return [];
+  const c = withCorners(raw);
+  const out: Contour[] = [];
+  const isFilled = c.filled ?? (c.closed && !c.stroke && c.paint?.fill !== "none");
+  if (c.closed && isFilled) {
+    const w = ensureWinding(c, "cw");
+    out.push(c.paint ? { ...w, paint: c.paint } : w);
+  }
+  if (stroke && c.stroke) {
+    const strokePaint = strokeOutlinePaint(c);
+    for (const o of geom.expandStroke(c, c.stroke)) out.push(strokePaint ? { ...o, paint: strokePaint } : o);
+  }
+  return out;
+}
+
+/**
+ * A layer's fillable contours: `renderContour` over each contour (a baked contour stays
+ * verbatim; unstroked closed contours come out CW, so they fill as one solid union — holes
+ * within a plain layer come only from a stroke outline, a baked contour, or a
+ * between-layer Subtract, never from winding).
  *
  * When `mergeHalftones` is on, same-style halftone-stroked paths in the layer are
  * rendered as ONE combined halftone (`expandHalftoneGroup`) instead of one per path,
- * so abutting paths read as a single continuous tone. A lone halftone path, and
- * everything else, renders exactly as with the flag off (default-off ⇒ byte-identical).
+ * so abutting paths read as a single continuous tone. Their interiors (if filled) still
+ * render per path. A lone halftone path, and everything else, renders exactly as with
+ * the flag off (default-off ⇒ byte-identical).
+ *
+ * Memoized by the INPUT ARRAY's identity (contours are immutable, Invariant 2), validated
+ * by everything else the output depends on. A drag re-renders the glyph every frame; with
+ * this, only the layer actually being edited is rebuilt, and its untouched neighbours keep
+ * stable output identities — which in turn lets `cachedPairOp` and the blend cache hit.
  */
+const renderCache = new WeakMap<
+  Contour[],
+  { baked: boolean; key: string; geom: GeometryService; result: Contour[] }
+>();
+
 function renderContours(layer: FillLayer, geom: GeometryService, opts: RenderOptions): Contour[] {
-  // A baked (merged) layer is already final geometry: render it verbatim so its
-  // holes (CCW) survive nonzero fill — do NOT force-CW or re-expand strokes.
+  const baked = !!layer.baked;
+  const key = renderKey(opts);
+  const hit = renderCache.get(layer.contours);
+  if (hit && hit.baked === baked && hit.key === key && hit.geom === geom) return hit.result;
+  const result = renderLayerContours(layer, geom, opts);
+  renderCache.set(layer.contours, { baked, key, geom, result });
+  return result;
+}
+
+function renderLayerContours(layer: FillLayer, geom: GeometryService, opts: RenderOptions): Contour[] {
+  // The synthetic layer of a render-as-one group is already final geometry: verbatim.
   if (layer.baked) return layer.contours;
   const out: Contour[] = [];
 
   // Pre-pass: bucket same-style halftone paths; a bucket of ≥2 renders as one combined
-  // halftone, and its source contours are skipped in the main loop below.
+  // halftone, and its source contours' OUTLINES are skipped in the main loop below.
   const merged = new Set<string>();
   if (opts.mergeHalftones) {
     const buckets = new Map<string, { raws: Contour[]; cs: Contour[] }>();
@@ -220,33 +282,63 @@ function renderContours(layer: FillLayer, geom: GeometryService, opts: RenderOpt
     for (const { raws, cs } of buckets.values()) {
       if (cs.length < 2) continue; // a lone halftone path falls through to the normal path
       const stroke = cs[0]!.stroke!;
-      const paint = cs[0]!.paint;
+      // The bucket shares one outline paint (it is part of the key) — the same paint each
+      // path's own halftone would have had, so merging never recolours the dots.
+      const paint = strokeOutlinePaint(cs[0]!);
       for (const o of geom.expandHalftoneGroup(cs, stroke)) out.push(paint ? { ...o, paint } : o);
       for (const r of raws) merged.add(r.id);
     }
   }
 
   for (const raw of layer.contours) {
-    if (raw.points.length < 2 || merged.has(raw.id)) continue;
-    // Non-destructive PATH-corner rounding (round/chamfer/inverted) runs FIRST, so the
-    // rounded centerline feeds stroke expansion and the fill alike. No-op without it.
-    const c = withCorners(raw);
-    // Fill and stroke are INDEPENDENT (a closed path can have both). `filled` defaults to
-    // the legacy rule (closed, unstroked, not Transparent) so old saves are byte-identical.
-    const isFilled = c.filled ?? (c.closed && !c.stroke && c.paint?.fill !== "none");
-    // Interior fill — carries the contour's `paint` (the fill colour).
-    if (c.closed && isFilled) {
-      const w = ensureWinding(c, "cw");
-      out.push(c.paint ? { ...w, paint: c.paint } : w);
-    }
-    // Stroke outline — coloured by the stroke's own `color`/`gradient`, else (legacy) the
-    // contour's `paint`, so an existing stroked path keeps its colour.
-    if (c.stroke) {
-      const strokePaint = strokeOutlinePaint(c);
-      for (const o of geom.expandStroke(c, c.stroke)) out.push(strokePaint ? { ...o, paint: strokePaint } : o);
-    }
+    out.push(...renderContour(raw, geom, { stroke: !merged.has(raw.id) }));
   }
   return out;
+}
+
+/**
+ * The geometry of an A→B blend, memoized per operand-array identity + step count. The
+ * steps are fresh contour objects, so recomputing them every render (every drag frame,
+ * even on an unrelated layer) also defeated the per-contour stroke cache: a stroked
+ * 8-step blend cost ~1 s per frame. Cached, the steps keep their identities and every
+ * downstream cache hits.
+ */
+const blendCache = new WeakMap<Contour[], { upper: Contour[]; steps: number; seq: Contour[][] | null }>();
+
+function cachedBlend(lower: Contour[], upper: Contour[], steps: number): Contour[][] | null {
+  const hit = blendCache.get(lower);
+  if (hit && hit.upper === upper && hit.steps === steps) return hit.seq;
+  const seq = blendContours(lower, upper, steps);
+  blendCache.set(lower, { upper, steps, seq });
+  return seq;
+}
+
+/**
+ * A Pathfinder boolean's result, memoized on the two operands' RENDERED arrays (stable
+ * identities, courtesy of the `renderContours` cache) + op + engine. Without it every
+ * pair re-ran its Paper boolean on every drag frame, whichever layer was being dragged.
+ */
+const pairCache = new WeakMap<
+  Contour[],
+  { lower: Contour[]; op: BooleanOp; geom: GeometryService; result: { contours: Contour[]; paint?: Paint } }
+>();
+
+function cachedPairOp(
+  op: BooleanOp,
+  upper: Contour[],
+  lower: Contour[],
+  geom: GeometryService,
+): { contours: Contour[]; paint?: Paint } {
+  const hit = pairCache.get(upper);
+  if (hit && hit.lower === lower && hit.op === op && hit.geom === geom) return hit.result;
+  const contours = geom[op](upper, lower);
+  // The boolean flattens operands to one region, so it carries ONE paint: operand A's
+  // (the upper layer), else B's — a colour set on either operand survives the pair
+  // instead of reverting to black. No paint on either operand → paint-less (black).
+  const paint = firstPaint(upper) ?? firstPaint(lower);
+  const result = paint ? { contours, paint } : { contours };
+  pairCache.set(upper, { lower, op, geom, result });
+  return result;
 }
 
 export function buildFillGroups(
@@ -257,16 +349,8 @@ export function buildFillGroups(
 ): FillGroup[] {
   const indexById = new Map(layers.map((l, i) => [l.id, i] as const));
 
-  // Expand strokes / solidify once per layer (an operand is reused by its pair).
-  const renderedCache = new Map<string, Contour[]>();
-  const rendered = (layer: FillLayer): Contour[] => {
-    let r = renderedCache.get(layer.id);
-    if (!r) {
-      r = renderContours(layer, geom, opts);
-      renderedCache.set(layer.id, r);
-    }
-    return r;
-  };
+  // Expand strokes / solidify per layer (memoized across calls — see renderContours).
+  const rendered = (layer: FillLayer): Contour[] => renderContours(layer, geom, opts);
 
   // Map each layer to its pair, but only for pairs whose BOTH members are
   // present (a hidden operand falls back to painting the visible one normally).
@@ -297,36 +381,28 @@ export function buildFillGroups(
     const upper = layers[Math.max(i0, i1)]!;
     const lower = layers[Math.min(i0, i1)]!;
 
-    // Blend (5th op): an A→B shape-morph echo. Interpolate the RAW contours (so B = a
-    // moved/scaled copy of A matches point-for-point), emit one solid-fill group per
-    // step (bottom→top z), each carrying the pair's inherited paint. Topology mismatch
-    // (or stroked/baked operands the raw lerp can't match) ⇒ render both operands as
-    // usual — never a glitch. The 4 boolean ops below are untouched.
+    // Blend (5th op): an A→B shape-morph echo, bottom→top z: operand B, the in-between
+    // steps, operand A. The two OPERANDS render exactly as themselves (their own colour,
+    // fill, holes and curves) — pairing two layers must not restyle them. Only the
+    // in-between steps are interpolated (`blendContours`) and rendered like a normal
+    // layer (strokes expand, corners apply, per-contour paint splits). An empty operand
+    // (nothing to blend) ⇒ just the operands. The 4 boolean ops below are untouched.
     if (pair.op === "blend") {
-      const seq = blendContours(lower.contours, upper.contours, pair.steps ?? DEFAULT_BLEND_STEPS);
+      const seq = cachedBlend(lower.contours, upper.contours, pair.steps ?? DEFAULT_BLEND_STEPS);
+      groups.push(...groupByPaint(lower.id, rendered(lower)));
       if (seq) {
-        // Render each step like a normal LAYER: strokes expand to outlines, corners
-        // apply, per-contour paint splits — so blend honours outlined/multi-path layers.
-        seq.forEach((step, k) => {
+        for (let k = 1; k < seq.length - 1; k += 1) {
           const stepId = `${pair.id}#b${k}`;
-          groups.push(...groupByPaint(stepId, renderContours({ id: stepId, contours: step }, geom, opts)));
-        });
-      } else {
-        groups.push(...groupByPaint(lower.id, rendered(lower)));
-        groups.push(...groupByPaint(upper.id, rendered(upper)));
+          groups.push(...groupByPaint(stepId, renderContours({ id: stepId, contours: seq[k]! }, geom, opts)));
+        }
       }
+      groups.push(...groupByPaint(upper.id, rendered(upper)));
       continue;
     }
 
-    const contours = geom[pair.op](rendered(upper), rendered(lower));
-    // Emitted at the first-encountered (lower) member → result sits at lower z. The
-    // boolean flattens operands to one region, so it carries ONE paint: operand A's
-    // (the upper layer), else B's — a colour set on either operand survives the pair
-    // instead of reverting to black. No paint on either operand → paint-less (black).
-    if (contours.length > 0) {
-      const paint = firstPaint(rendered(upper)) ?? firstPaint(rendered(lower));
-      groups.push(paint ? { id: pair.id, contours, paint } : { id: pair.id, contours });
-    }
+    // Emitted at the first-encountered (lower) member → result sits at lower z.
+    const result = cachedPairOp(pair.op, rendered(upper), rendered(lower), geom);
+    if (result.contours.length > 0) groups.push({ id: pair.id, ...result });
   }
 
   return groups;
@@ -400,7 +476,6 @@ export function glyphFillGroups(
     .map((l) => ({
       id: l.id,
       contours: l.contours,
-      ...(l.baked ? { baked: true } : {}),
       ...(l.groupId ? { groupId: l.groupId } : {}),
     }));
   const groups = buildGlyphFills(

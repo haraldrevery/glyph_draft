@@ -1,6 +1,6 @@
-<!-- Edit this file to change the "Licence" window. Paste your real licence text here. -->
+<!-- Edit this file to change the "License" window. Paste your real license text here. -->
 
-# Licence
+# License
 
 _Placeholder — replace with the project's actual licence._
 

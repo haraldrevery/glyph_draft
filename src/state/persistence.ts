@@ -9,6 +9,8 @@ import {
   STORAGE_KEY,
   BACKUP_KEY,
   CORRUPT_KEY,
+  SESSION_KEY,
+  SESSION_PREV_KEY,
   serializeProject,
   migrate,
 } from "../storage/projectFile";
@@ -32,6 +34,9 @@ import {
  *                   so autosave is PAUSED — writing now would replace the real
  *                   document with whatever is on screen.
  *  - Writes are serialized, so an autosave and an explicit save never interleave.
+ *  - Recovery points (File → Restore previous version…): each launch keeps the loaded workspace as the
+ *    "session" snapshot (the previous one rotating to "session.prev"), outside the
+ *    autosave rotation — so a non-undoable mistake (deleting a glyph) stays recoverable.
  *  - Only ONE tab may write (tabLock.ts); a second tab opens but doesn't save.
  * Nothing here throws into the UI; failures surface through the save-status store.
  */
@@ -136,12 +141,31 @@ async function writeNow(): Promise<void> {
   }
 }
 
+/** Run a storage task behind any in-flight one, so no two ever interleave. */
+function enqueue(task: () => Promise<void>): Promise<void> {
+  const run = writeChain.then(task);
+  writeChain = run.catch(() => undefined);
+  return run;
+}
+
 /** Queue a write behind any in-flight one. Each write serializes the document as it
  *  is when the write STARTS, so a queued write always carries the latest state. */
 function enqueueWrite(): Promise<void> {
-  const run = writeChain.then(writeNow);
-  writeChain = run.catch(() => undefined);
-  return run;
+  return enqueue(writeNow);
+}
+
+/** Keep the just-loaded workspace as this session's recovery point, rotating the last
+ *  session's one to `SESSION_PREV_KEY`. Best-effort: a recovery point must never get in
+ *  the way of saving, so every failure is swallowed. */
+async function snapshotSession(glyphs: Record<string, Glyph>): Promise<void> {
+  try {
+    const storage = await createStorage();
+    const prev = await storage.getItem<unknown>(SESSION_KEY).catch(() => null);
+    if (prev != null && migrate(prev)) await storage.setItem(SESSION_PREV_KEY, prev);
+    await storage.setItem(SESSION_KEY, serializeProject(glyphs));
+  } catch {
+    /* best-effort */
+  }
 }
 
 function scheduleSave(): void {
@@ -241,6 +265,9 @@ async function init(): Promise<void> {
   if (blocked) blockSaving(blocked);
   else if (!owner) {
     blockSaving("Glyph Draft is open in another tab — edits here won't be saved. Use that tab, or close it and reload this one");
+  } else if (glyphs) {
+    // Only the tab that may write, and only when the load was trustworthy.
+    void enqueue(() => snapshotSession(glyphs));
   }
 
   ready = true;

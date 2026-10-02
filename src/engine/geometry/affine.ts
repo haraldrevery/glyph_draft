@@ -1,5 +1,6 @@
 import type { Vec2 } from "../../types/viewport";
 import type { AnchorPoint, Contour } from "../../types/geometry";
+import { reverseContour } from "./path";
 
 /**
  * 2D affine transforms for the transform box (Ctrl+T). Pure and framework-free:
@@ -68,20 +69,29 @@ export function rotateAbout(rad: number, pivot: Vec2): Matrix {
 /** Transform an anchor and whichever handles it carries. */
 export function transformAnchor(p: AnchorPoint, m: Matrix): AnchorPoint {
   const a = apply(m, p);
-  const out: AnchorPoint = { id: p.id, type: p.type, x: a.x, y: a.y };
+  const out: AnchorPoint = { ...p, x: a.x, y: a.y }; // every other field kept
   if (p.handleIn) out.handleIn = apply(m, p.handleIn);
   if (p.handleOut) out.handleOut = apply(m, p.handleOut);
   return out;
 }
 
-/** Apply `m` to the anchors in `ids`, leaving the rest of each contour untouched. */
+/** Apply `m` to the anchors in `ids`, leaving the rest of each contour untouched.
+ *
+ *  A MIRROR (det < 0: flip, or a transform-box scale dragged through its pivot) reverses
+ *  a contour's orientation. For a BAKED contour that orientation is data — CW outers and
+ *  CCW counters are what make its holes holes, and what the FontForge export carries — so
+ *  a fully mirrored baked contour is reversed back. Other paths are left alone: an
+ *  unstroked fill is re-oriented at render anyway, and reversing a stroked path would
+ *  swap its start/end caps. */
 export function transformSelected(
   contours: Contour[],
   ids: Set<string>,
   m: Matrix,
 ): Contour[] {
+  const mirrors = m.a * m.d - m.b * m.c < 0;
   return contours.map((c) => {
     if (!c.points.some((p) => ids.has(p.id))) return c;
-    return { ...c, points: c.points.map((p) => (ids.has(p.id) ? transformAnchor(p, m) : p)) };
+    const moved = { ...c, points: c.points.map((p) => (ids.has(p.id) ? transformAnchor(p, m) : p)) };
+    return mirrors && c.baked && c.points.every((p) => ids.has(p.id)) ? reverseContour(moved) : moved;
   });
 }

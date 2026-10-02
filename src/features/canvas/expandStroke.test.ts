@@ -59,6 +59,13 @@ function selectNode(layerId: string, contourId: string, pointId: string): void {
 
 const glyph = () => useDocumentStore.getState().glyphs["G"]!;
 
+/** The layer Expand stroke created: every contour on it is baked (per-contour flag, v9). */
+function bakedLayer() {
+  return useDocumentStore
+    .getState()
+    .glyphs["G"]!.layers.find((l) => l.contours.length > 0 && l.contours.every((c) => c.baked));
+}
+
 describe("expandSelectedStrokes + path corners", () => {
   // renderContours rounds a path's corners BEFORE expanding its stroke, so the
   // canvas shows a filleted outline. "Expand stroke" must bake exactly what the
@@ -82,7 +89,7 @@ describe("expandSelectedStrokes + path corners", () => {
     selectNode("L0", "s", "s_p0");
     expandSelectedStrokes();
 
-    const baked = glyph().layers.find((l) => l.baked)!;
+    const baked = bakedLayer()!;
     expect(coords(baked.contours)).toEqual(rendered(c));
   });
 
@@ -103,7 +110,7 @@ describe("expandSelectedStrokes + path corners", () => {
     selectNode("L0", "s", "s_p0");
     expandSelectedStrokes();
 
-    const baked = glyph().layers.find((l) => l.baked)!;
+    const baked = bakedLayer()!;
     expect(coords(baked.contours)).toEqual(rendered(c));
   });
 });
@@ -127,7 +134,7 @@ describe("expandSelectedStrokes", () => {
     // The original stroked centerline is gone from its layer.
     expect(layers.find((l) => l.id === "L0")!.contours.find((c) => c.id === "s")).toBeUndefined();
     // The new layer is baked and holds the expanded outline (≥1 contour).
-    const baked = layers.find((l) => l.baked);
+    const baked = bakedLayer();
     expect(baked).toBeDefined();
     expect(baked!.contours.length).toBeGreaterThanOrEqual(1);
     // No expanded contour still carries a stroke recipe — they're plain fills now.
@@ -145,7 +152,7 @@ describe("expandSelectedStrokes", () => {
     const layers = glyph().layers;
     expect(layers.length).toBe(1);
     expect(layers[0]!.contours.find((c) => c.id === "s")?.stroke).toEqual(STROKE);
-    expect(layers.some((l) => l.baked)).toBe(false);
+    expect(layers.some((l) => l.contours.some((c) => c.baked))).toBe(false);
   });
 
   it("does nothing when the selected path has no stroke", () => {
@@ -155,5 +162,31 @@ describe("expandSelectedStrokes", () => {
     expandSelectedStrokes();
     expect(glyph().layers.length).toBe(1); // unchanged
     expect(glyph().layers[0]!.contours[0]!.id).toBe("plain");
+  });
+});
+
+describe("expandSelectedStrokes keeps the path's look (shares renderContour with the canvas)", () => {
+  it("paints the outline in the STROKE colour, not the fill colour", () => {
+    seed([{ ...square("s", { ...STROKE, color: "#ff0000" }), paint: { fill: "#0000ff" } }]);
+    selectNode("L0", "s", "s_p0");
+    expandSelectedStrokes();
+    const fills = bakedLayer()!.contours.map((c) => c.paint?.fill);
+    expect(fills.length).toBeGreaterThan(0);
+    expect(fills.every((f) => f === "#ff0000")).toBe(true); // was the fill's #0000ff
+  });
+
+  it("keeps the interior of a filled + stroked path", () => {
+    seed([{ ...square("s", { ...STROKE, color: "#ff0000" }), paint: { fill: "#0000ff" }, filled: true }]);
+    selectNode("L0", "s", "s_p0");
+    expandSelectedStrokes();
+    const fills = bakedLayer()!.contours.map((c) => c.paint?.fill);
+    expect(fills).toContain("#0000ff"); // the interior (was dropped with the original)
+    expect(fills).toContain("#ff0000"); // the outline
+  });
+
+  it("ignores a baked contour's inert stroke", () => {
+    seed([{ ...square("s", STROKE), baked: true }]);
+    selectNode("L0", "s", "s_p0");
+    expect(canExpandStrokes()).toBe(false);
   });
 });

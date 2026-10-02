@@ -64,7 +64,6 @@ const fillLayers = (g: Glyph): FillLayer[] =>
   g.layers.map((l) => ({
     id: l.id,
     contours: l.contours,
-    ...(l.baked ? { baked: true } : {}),
     ...(l.groupId ? { groupId: l.groupId } : {}),
   }));
 
@@ -193,8 +192,7 @@ describe("baked members keep their counters", () => {
       name: "ring",
       visible: true,
       locked: false,
-      contours: [outer, hole],
-      baked: true,
+      contours: [outer, hole].map((c) => ({ ...c, baked: true })),
       groupId: "g1",
     };
     const g = gl([ring, lay("plain", 400, "g1")], [grp("g1", { renderAsOne: true })]);

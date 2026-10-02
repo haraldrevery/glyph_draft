@@ -2,9 +2,17 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import type { BooleanPair, Glyph, Layer, LayerGroup, PairOp } from "../types/document";
 import type { AnchorPoint, Contour, CornerStyle, GradientFill, Paint, PointRef, StrokeStyle } from "../types/geometry";
-import { DEFAULT_STROKE } from "../types/geometry";
+import { DEFAULT_GRADIENT, DEFAULT_STROKE } from "../types/geometry";
+import { patchPaint, pinLegacyStrokePaint, type PaintPatch } from "../engine/paint/paint";
 import { createId } from "../utils/id";
-import { extractContours, joinContours, splitContourAt, splitContourAtPoints } from "../engine/geometry/topology";
+import {
+  closeEnds,
+  coincident,
+  extractContours,
+  joinContours,
+  splitContourAt,
+  splitContourAtPoints,
+} from "../engine/geometry/topology";
 import { convertPoint } from "../engine/geometry/nodeHandles";
 import {
   ancestors,
@@ -23,6 +31,7 @@ import {
   findLayer,
   makeEmptyLayer,
   mapGlyphLayers,
+  markBaked,
   moveInArray,
   nextLayerName,
   replaceContourIn,
@@ -126,9 +135,13 @@ interface DocumentState {
    *  handles), "cusp" (corner-typed but with handles, moved independently), or
    *  "corner" (handles stripped). Cross-layer, locked-safe, one undo step. */
   convertPoints: (refs: PointRef[], mode: "smooth" | "cusp" | "corner") => void;
-  /** Fuse two open-contour endpoints into one path. When both refs are the two
-   *  ends of the SAME contour, it is closed in place. One undo step. */
-  joinEndpoints: (a: PointRef, b: PointRef) => void;
+  /** Join two open-contour endpoints into one path; when both refs are the two ends of
+   *  the SAME contour it is closed in place. The result lands on b's layer, styled as
+   *  b's path. `"merge"` (drag-to-merge) absorbs a's end INTO b's — the dragged node is
+   *  dropped, its curve kept. `"join"` (the Merge nodes command, default) fuses the two
+   *  ends into one node when they coincide, and otherwise connects them with a new
+   *  segment (it once dropped b's node regardless). One undo step. */
+  joinEndpoints: (a: PointRef, b: PointRef, mode?: "join" | "merge") => void;
   deleteContour: (contourId: string) => void;
   deleteContours: (contourIds: string[]) => void;
   /** Remove contour ids from every unlocked layer (cross-layer cut). */
@@ -160,9 +173,18 @@ interface DocumentState {
   /** Set (or clear, with null) the fill paint on contours across unlocked layers
    *  (default ink = no paint = black). One undo step. */
   setContourPaint: (contourIds: string[], paint: Paint | null) => void;
+  /** Patch each target's OWN fill paint (only the named properties; `gradient: null`
+   *  removes it). Per contour, so editing one property on a multi-selection never
+   *  overwrites the other paths' colours. Before the edit, a legacy stroke whose outline
+   *  still follows the fill paint is pinned to its current colour (`pinLegacyStrokePaint`),
+   *  so a fill edit never recolours an outline. One undo step. */
+  patchContourPaint: (contourIds: string[], patch: PaintPatch) => void;
   setContourFilled: (contourIds: string[], filled: boolean | null) => void;
   setStrokeColor: (contourIds: string[], color: string) => void;
   setStrokeGradient: (contourIds: string[], gradient: GradientFill | null) => void;
+  /** Patch each stroked target's OWN outline gradient (merged into it, or into the
+   *  default when it has none); `null` removes it. One undo step. */
+  patchStrokeGradient: (contourIds: string[], patch: Partial<GradientFill> | null) => void;
   /** Set (or clear, with null) the path-corner style on contours across unlocked
    *  layers (round/chamfer/inverted). One undo step. */
   setContourCorner: (contourIds: string[], corner: CornerStyle | null) => void;
@@ -665,12 +687,25 @@ export const useDocumentStore = create<DocumentState>()(
         },
 
         setContourPaint: (contourIds, paint) => {
-          // Fill paint (default ink = no paint). `null` clears it back to black.
+          // Fill paint (default ink = no paint). `null` clears it back to black. A legacy
+          // outline that follows the fill is pinned first, so only the interior changes.
           patchContours(contourIds, (c) => {
-            if (paint) return { ...c, paint };
-            const next = { ...c };
-            delete next.paint;
-            return next;
+            const next = pinLegacyStrokePaint(c);
+            if (paint) return { ...next, paint };
+            const cleared = { ...next };
+            delete cleared.paint;
+            return cleared;
+          });
+        },
+
+        patchContourPaint: (contourIds, patch) => {
+          patchContours(contourIds, (c) => {
+            const next = pinLegacyStrokePaint(c);
+            const paint = patchPaint(next.paint, patch);
+            if (paint) return { ...next, paint };
+            const cleared = { ...next };
+            delete cleared.paint;
+            return cleared;
           });
         },
 
@@ -702,6 +737,19 @@ export const useDocumentStore = create<DocumentState>()(
             const stroke = { ...c.stroke };
             delete stroke.gradient;
             return { ...c, stroke };
+          });
+        },
+
+        patchStrokeGradient: (contourIds, patch) => {
+          patchContours(contourIds, (c) => {
+            if (!c.stroke) return null;
+            if (patch === null) {
+              const stroke = { ...c.stroke };
+              delete stroke.gradient;
+              return { ...c, stroke };
+            }
+            const gradient = { ...(c.stroke.gradient ?? DEFAULT_GRADIENT), ...patch };
+            return { ...c, stroke: { ...c.stroke, gradient } };
           });
         },
 
@@ -907,7 +955,7 @@ export const useDocumentStore = create<DocumentState>()(
           set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
         },
 
-        joinEndpoints: (a, b) => {
+        joinEndpoints: (a, b, mode = "join") => {
           const s = get();
           if (!s.activeGlyphId) return;
           const glyph = s.glyphs[s.activeGlyphId];
@@ -930,27 +978,28 @@ export const useDocumentStore = create<DocumentState>()(
           const ra = endRole(ca, a.pointId);
           const rb = endRole(cb, b.pointId);
           if (!ra || !rb) return;
+          // Merge a's end into b's (drop a's node) on a drag-merge, or when the two ends
+          // already sit on the same spot; otherwise connect them with a segment.
+          const pa = ca.points.find((p) => p.id === a.pointId)!;
+          const pb = cb.points.find((p) => p.id === b.pointId)!;
+          const fuse = mode === "merge" || coincident(pa, pb);
 
           // Same contour, its two distinct ends → close it in place.
           if (ca === cb) {
             if (a.pointId === b.pointId) return;
+            const closed = closeEnds(cb, fuse ? ra : undefined);
             const layers = glyph.layers.map((layer) =>
               layer.id === lb.id
-                ? {
-                    ...layer,
-                    contours: layer.contours.map((c) =>
-                      c.id === cb.id ? { ...c, closed: true } : c,
-                    ),
-                  }
+                ? { ...layer, contours: layer.contours.map((c) => (c.id === cb.id ? closed : c)) }
                 : layer,
             );
             set({ glyphs: { ...s.glyphs, [glyph.id]: { ...glyph, layers } } });
             return;
           }
 
-          // Keep the TARGET (b) geometry/stroke and drop the (a) coincident endpoint;
-          // the merged path replaces cb on b's layer, and ca is removed from its layer.
-          const merged = joinContours(cb, ca, rb === "start", ra === "start");
+          // Keep the TARGET (b) geometry/style; a's chosen end is fused into b's (or
+          // connected to it). The result replaces cb on b's layer; ca is removed.
+          const merged = joinContours(cb, ca, rb === "start", ra === "start", fuse);
           const layers = glyph.layers.map((layer) => {
             if (layer.id === lb.id) {
               const contours = layer.contours
@@ -1056,11 +1105,11 @@ export const useDocumentStore = create<DocumentState>()(
           // Inherit the active layer's group so the splice above it cannot
           // split that group's contiguous run.
           const inheritedGid = inheritGroupId(glyph, s.activeLayerId);
-          // Baked = render the imported geometry verbatim (holes/colours preserved).
+          // Baked = render the imported geometry verbatim (holes/colours preserved). The
+          // mark is per contour, so paths drawn on this layer later render normally.
           const layer: Layer = {
             ...makeEmptyLayer(name ?? nextLayerName(glyph)),
-            contours,
-            baked: true,
+            contours: markBaked(contours),
             ...(inheritedGid ? { groupId: inheritedGid } : {}),
           };
           const at = glyph.layers.findIndex((l) => l.id === s.activeLayerId);
@@ -1085,14 +1134,14 @@ export const useDocumentStore = create<DocumentState>()(
             const kept = layer.contours.filter((c) => !removeIds.has(c.id));
             return kept.length === layer.contours.length ? layer : { ...layer, contours: kept };
           });
-          // Baked = render the expanded outline verbatim (holes/winding preserved).
+          // Baked = render the expanded outline verbatim (holes/winding preserved); per
+          // contour, so paths drawn on this layer later render normally.
           // Inherit the active layer's group so the splice above it cannot
           // split that group's contiguous run.
           const inheritedGid = inheritGroupId(glyph, s.activeLayerId);
           const layer: Layer = {
             ...makeEmptyLayer(name ?? nextLayerName(glyph)),
-            contours: expanded,
-            baked: true,
+            contours: markBaked(expanded),
             ...(inheritedGid ? { groupId: inheritedGid } : {}),
           };
           const at = stripped.findIndex((l) => l.id === s.activeLayerId);

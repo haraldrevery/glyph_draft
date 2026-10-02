@@ -86,6 +86,22 @@ describe("buildFillGroups", () => {
     expect(contourWinding(groups[0]!.contours[1]!)).toBe("ccw"); // hole NOT force-CW'd
   });
 
+  it("baked is per CONTOUR: imported art stays verbatim, a path drawn later on its layer renders normally", () => {
+    // The layer-level flag this replaced rendered EVERYTHING on an imported/merged layer
+    // verbatim — so a stroke drawn there after an import came out as a filled centerline.
+    const stroke: StrokeStyle = { width: 10, startCap: "butt", endCap: "butt", join: "miter" };
+    const line: Contour = { ...poly("line", [[0, 200], [100, 200]]), closed: false, stroke };
+    const outer = { ...INNER_CW, baked: true };
+    const hole = { ...INNER, baked: true };
+    const [g] = buildFillGroups([{ id: "L", contours: [outer, hole, line] }], [], geom);
+    expect(g!.contours[0]).toBe(outer); // verbatim — the CCW hole keeps its winding
+    expect(g!.contours[1]).toBe(hole);
+    const drawn = g!.contours.slice(2);
+    expect(drawn.length).toBeGreaterThan(0);
+    expect(drawn).not.toContain(line); // expanded to an outline, not the raw centerline
+    expect(drawn.every((c) => c.closed)).toBe(true);
+  });
+
   it("does not mutate the input contours (non-destructive)", () => {
     const inner = poly("inner2", [[25, 25], [75, 25], [75, 75], [25, 75]]);
     const snapshot = JSON.stringify(inner);
@@ -223,6 +239,35 @@ describe("buildFillGroups — mergeHalftones", () => {
     expect(g.groupCalls).toHaveLength(0);
     expect(g.strokeCalls).toHaveLength(1);
   });
+
+  it("flag ON never changes the look: dots keep the STROKE colour, filled interiors stay", () => {
+    // Red-stroke / blue-fill halftone squares. Merging used to paint the dots with the
+    // fill colour (blue) and drop the interiors.
+    const sq = (id: string, dx: number): Contour => ({
+      ...poly(id, [[dx, 0], [dx + 100, 0], [dx + 100, 100], [dx, 100]]),
+      stroke: { ...htStroke(10), color: "#ff0000" },
+      paint: { fill: "#0000ff" },
+      filled: true,
+    });
+    const paints = (merge: boolean) =>
+      buildFillGroups([{ id: "L", contours: [sq("a", 0), sq("b", 80)] }], [], new StubGeom(), {
+        mergeHalftones: merge,
+      }).map((grp) => [grp.paint?.fill, grp.contours.length]);
+    const off = paints(false);
+    const on = paints(true);
+    expect(off).toContainEqual(["#0000ff", 2]); // both interiors
+    expect(on).toContainEqual(["#0000ff", 2]); // …still there when merged
+    expect(on).toContainEqual(["#ff0000", 1]); // the ONE combined tone, in the stroke colour
+    expect(on.some(([fill]) => fill === "#ff0000")).toBe(true);
+  });
+
+  it("flag ON: paths whose stroke colours differ are not merged into one tone", () => {
+    const g = new StubGeom();
+    const a = { ...htLine("h1"), stroke: { ...htStroke(10), color: "#ff0000" } };
+    const b = { ...htLine("h2"), stroke: { ...htStroke(10), color: "#00ff00" } };
+    buildFillGroups([{ id: "L", contours: [a, b] }], [], g, { mergeHalftones: true });
+    expect(g.groupCalls).toHaveLength(0);
+  });
 });
 
 describe("buildFillGroups — independent fill & stroke", () => {
@@ -333,21 +378,57 @@ describe("buildFillGroups — blend (5th op)", () => {
       { id: "LA", contours: [sqA] }, // upper
     ];
     const groups = buildFillGroups([...layers], [blendPair("LA", "LB", 2)], geom);
-    expect(groups).toHaveLength(4); // A + 2 middles + B
-    expect(groups.every((g) => g.id.includes("#b"))).toBe(true);
+    expect(groups).toHaveLength(4); // B + 2 in-between steps + A
+    // The two ends ARE the operand layers (rendered as themselves); only the middles blend.
+    expect(groups.map((g) => g.id)).toEqual(["LB", "LA_LB_blend#b1", "LA_LB_blend#b2", "LA"]);
     // Every step is a solid (forced CW) fill.
     for (const grp of groups) expect(contourWinding(grp.contours[0]!)).toBe("cw");
   });
 
-  it("inherits operand A's paint on every step", () => {
+  it("in-between steps take operand A's paint; each operand keeps its own", () => {
     const sqA = { ...poly("a", [[0, 0], [10, 0], [10, 10], [0, 10]]), paint: { fill: "#ff0000" } };
-    const sqB = poly("b", [[100, 0], [110, 0], [110, 10], [100, 10]]);
+    const sqB = { ...poly("b", [[100, 0], [110, 0], [110, 10], [100, 10]]), paint: { fill: "#0000ff" } };
     const groups = buildFillGroups(
       [{ id: "LB", contours: [sqB] }, { id: "LA", contours: [sqA] }],
+      [blendPair("LA", "LB", 2)],
+      geom,
+    );
+    // Pairing must not restyle an operand: B stays blue (it used to be painted A's red —
+    // or black when A had no paint). The echo between them reads in A's colour.
+    expect(groups.map((g) => g.paint?.fill)).toEqual(["#0000ff", "#ff0000", "#ff0000", "#ff0000"]);
+  });
+
+  it("in-between steps keep a baked operand's holes (verbatim, not forced CW)", () => {
+    // An imported/merged ring: CW outer + CCW counter, both baked.
+    const ring = (id: string, dx: number): Contour[] => [
+      { ...poly(`${id}o`, [[dx, 0], [dx, 100], [dx + 100, 100], [dx + 100, 0]]), baked: true },
+      { ...poly(`${id}h`, [[dx + 30, 30], [dx + 70, 30], [dx + 70, 70], [dx + 30, 70]]), baked: true },
+    ];
+    const groups = buildFillGroups(
+      [{ id: "LB", contours: ring("b", 200) }, { id: "LA", contours: ring("a", 0) }],
       [blendPair("LA", "LB", 1)],
       geom,
     );
-    expect(groups.every((g) => g.paint?.fill === "#ff0000")).toBe(true);
+    expect(groups).toHaveLength(3);
+    for (const g of groups) {
+      expect(g.contours.map(contourWinding)).toEqual(["cw", "ccw"]); // the counter survives
+    }
+  });
+
+  it("in-between steps keep an interior fill (`filled`) alongside the stroke", () => {
+    const stroke = { width: 4, startCap: "butt" as const, endCap: "butt" as const, join: "miter" as const };
+    const sq = (id: string, dx: number): Contour => ({
+      ...poly(id, [[dx, 0], [dx + 50, 0], [dx + 50, 50], [dx, 50]]),
+      stroke,
+      filled: true,
+    });
+    const groups = buildFillGroups(
+      [{ id: "LB", contours: [sq("b", 200)] }, { id: "LA", contours: [sq("a", 0)] }],
+      [blendPair("LA", "LB", 1)],
+      geom,
+    );
+    const counts = groups.map((g) => g.contours.length);
+    expect(counts[1]).toBe(counts[0]); // the step renders interior + outline, like the operands
   });
 
   it("stroked blend paths expand per step (honours outlined paths)", () => {
@@ -386,8 +467,8 @@ describe("buildFillGroups — blend (5th op)", () => {
       [blendPair("LA", "LB", 3)],
       geom,
     );
-    expect(groups).toHaveLength(5); // steps + 2 blended steps, not ["LA","LB"]
-    expect(groups.every((g) => g.id.includes("#b"))).toBe(true);
+    expect(groups).toHaveLength(5); // B + 3 resampled in-between steps + A
+    expect(groups.slice(1, -1).every((g) => g.id.includes("#b"))).toBe(true);
   });
 
   it("falls back to the operands only when a layer is empty (nothing to blend)", () => {

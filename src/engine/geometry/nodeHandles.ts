@@ -78,7 +78,9 @@ export function convertPoint(
   const p = contour.points[index]!;
 
   if (mode === "corner") {
-    const next: AnchorPoint = { id: p.id, type: "corner", x: p.x, y: p.y };
+    // Strip the handles; keep every other field of the node (spread, not a field list).
+    const { handleIn: _in, handleOut: _out, ...rest } = p;
+    const next: AnchorPoint = { ...rest, type: "corner" };
     return next;
   }
 

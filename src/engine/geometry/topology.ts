@@ -1,7 +1,7 @@
-import type { AnchorPoint, Contour } from "../../types/geometry";
+import type { AnchorPoint, Contour, StrokeStyle } from "../../types/geometry";
 import type { Vec2 } from "../../types/viewport";
 import { createId } from "../../utils/id";
-import { splitCubic } from "./path";
+import { reverseContour as reverseInPlace, splitCubic } from "./path";
 
 /**
  * Pure contour-topology operations shared by node editing: cutting a contour's
@@ -12,14 +12,83 @@ import { splitCubic } from "./path";
  * Handles are absolute coords (Invariant 1), so points move as plain structural
  * copies. Reversing a point swaps its in/out handles; splitting a stroked path
  * butt-caps the newly created ends (see extractContours).
+ *
+ * Every piece is built by SPREADING its source (`{ ...contour, id, points }`) and then
+ * overriding what changes — never by listing the fields to keep. A field-by-field copy
+ * compiles clean when a new optional field is added and silently drops it; that is how
+ * cut / delete-split / scissors / merge once lost paths' colour, corners and fill.
  */
 
-/** A fresh structural copy of an anchor (new object graph, SAME id). */
+/** A fresh structural copy of an anchor (new object graph, SAME id, every field kept). */
 function clonePoint(p: AnchorPoint): AnchorPoint {
-  const copy: AnchorPoint = { id: p.id, type: p.type, x: p.x, y: p.y };
+  const copy: AnchorPoint = { ...p };
   if (p.handleIn) copy.handleIn = { ...p.handleIn };
   if (p.handleOut) copy.handleOut = { ...p.handleOut };
   return copy;
+}
+
+/** A new piece of `src`: every one of `src`'s fields (paint, fill, corners, baked, and
+ *  any added later) with a fresh id, the given points/closedness, and its own stroke copy. */
+function pieceOf(src: Contour, points: AnchorPoint[], closed: boolean): Contour {
+  const piece: Contour = { ...src, id: createId("ct"), closed, points };
+  if (src.stroke) piece.stroke = structuredClone(src.stroke);
+  return piece;
+}
+
+/** The per-TERMINAL stroke fields (`startCap`, `startSerif`, … / `endCap`, …). */
+const END_FIELDS = ["Cap", "Serif", "Drop", "Rect", "RoundAtNode"] as const;
+
+/** Copy one terminal's cap settings from `src` (its `from` end) onto `out`'s `to` end. */
+function copyEnd(out: StrokeStyle, src: StrokeStyle, from: "start" | "end", to: "start" | "end"): void {
+  const o = out as unknown as Record<string, unknown>;
+  const s = src as unknown as Record<string, unknown>;
+  for (const f of END_FIELDS) {
+    const v = s[`${from}${f}`];
+    if (v === undefined) delete o[`${to}${f}`];
+    else o[`${to}${f}`] = structuredClone(v);
+  }
+}
+
+const COINCIDENT_EPS = 1e-6;
+
+/** Do two anchors sit on the same spot? (Merge Nodes fuses such ends into one node.) */
+export function coincident(a: Vec2, b: Vec2): boolean {
+  return Math.hypot(a.x - b.x, a.y - b.y) <= COINCIDENT_EPS;
+}
+
+/**
+ * Fuse a DROPPED endpoint into a KEPT one. The kept node keeps its position and its
+ * inner handle (`keptInner`, which shapes its own path's last curve); its outer side
+ * takes the dropped node's inner handle — the one that shaped the dropped node's curve
+ * onward — so that curve keeps its shape. The handle is carried as an OFFSET: the dropped
+ * node may sit elsewhere (drag-to-merge hands in the pre-drag contour). The node stays
+ * `smooth` only when both were smooth and the two handles stay collinear; otherwise it
+ * becomes a corner (with handles = a cusp).
+ */
+function fuseNodes(
+  kept: AnchorPoint,
+  keptInner: "handleIn" | "handleOut",
+  dropped: AnchorPoint,
+  droppedInner: "handleIn" | "handleOut",
+): AnchorPoint {
+  const keptOuter = keptInner === "handleIn" ? "handleOut" : "handleIn";
+  const out: AnchorPoint = { ...kept };
+  const h = dropped[droppedInner];
+  if (h) out[keptOuter] = { x: kept.x + (h.x - dropped.x), y: kept.y + (h.y - dropped.y) };
+  else delete out[keptOuter];
+  const a = out[keptInner];
+  const b = out[keptOuter];
+  let smooth = false;
+  if (kept.type === "smooth" && dropped.type === "smooth" && a && b) {
+    const ax = a.x - kept.x;
+    const ay = a.y - kept.y;
+    const bx = b.x - kept.x;
+    const by = b.y - kept.y;
+    const len = Math.hypot(ax, ay) * Math.hypot(bx, by);
+    smooth = len > 0 && Math.abs(ax * by - ay * bx) <= 1e-3 * len && ax * bx + ay * by < 0;
+  }
+  out.type = smooth ? "smooth" : "corner";
+  return out;
 }
 
 /**
@@ -91,61 +160,81 @@ function makeFragment(
   closed: boolean,
 ): Contour {
   const points = indices.map((i) => clonePoint(contour.points[i]!));
-  const fragment: Contour = { id: createId("ct"), closed, points };
+  const fragment = pieceOf(contour, points, closed);
+  if (closed) return fragment;
 
-  if (contour.stroke) {
-    const stroke = structuredClone(contour.stroke);
-    if (!closed) {
-      // Keep an original terminal's cap only where this run still touches it
-      // (open source). Closed sources have no terminal → both ends are new.
-      const openSource = !contour.closed;
-      stroke.startCap = openSource && indices[0] === 0 ? stroke.startCap : "butt";
-      stroke.endCap =
-        openSource && indices[indices.length - 1] === total - 1
-          ? stroke.endCap
-          : "butt";
-    }
-    fragment.stroke = stroke;
+  // An end is NEW unless it is an original terminal of an open source (a closed source
+  // has no terminals, so both its fragment ends are new).
+  const openSource = !contour.closed;
+  const startIsNew = !(openSource && indices[0] === 0);
+  const endIsNew = !(openSource && indices[indices.length - 1] === total - 1);
+  // A new end's outward handle pointed at the removed neighbour. Left in place it would
+  // be read as that end's cap-angle handle and re-cut the fresh butt end — drop it, as
+  // the scissors/knife cut (splitContourAtPoints) already does.
+  if (startIsNew) delete points[0]!.handleIn;
+  if (endIsNew) delete points[points.length - 1]!.handleOut;
+  if (fragment.stroke) {
+    // Keep an original terminal's cap only where this run still touches it.
+    if (startIsNew) fragment.stroke.startCap = "butt";
+    if (endIsNew) fragment.stroke.endCap = "butt";
   }
   return fragment;
 }
 
-/** A copy with the point order reversed and each anchor's in/out handles swapped. */
+/** A copy (new id) with the point order reversed and each anchor's in/out handles swapped. */
 export function reverseContour(contour: Contour): Contour {
-  const points = contour.points
-    .slice()
-    .reverse()
-    .map((p) => {
-      const r: AnchorPoint = { id: p.id, type: p.type, x: p.x, y: p.y };
-      if (p.handleOut) r.handleIn = { ...p.handleOut };
-      if (p.handleIn) r.handleOut = { ...p.handleIn };
-      return r;
-    });
-  return { ...contour, id: createId("ct"), points };
+  return { ...reverseInPlace(contour), id: createId("ct") };
 }
 
 /**
- * Fuse two open contours at the chosen ends into one open contour. Each is
- * oriented so the join runs a's tail → b's head, then b's leading (coincident)
- * anchor is dropped. The result keeps `a`'s stroke. (Joining a path's own two
- * ends — closing it — is handled by the caller, which just sets `closed`.)
+ * Fuse two open contours at the chosen ends into one open contour. Each is oriented so
+ * the join runs a's tail → b's head. With `fuse` (default) b's chosen endpoint is merged
+ * INTO a's (`fuseNodes` — b's first curve keeps its shape); without it the two ends are
+ * connected by a new segment (both nodes kept — Illustrator's Join of ends that are apart).
+ *
+ * The result is a piece of `a` (its paint, fill, corners, stroke…). Each terminal keeps
+ * the cap of the geometric end it IS: the joined start is a's far end (a's own cap there,
+ * even when a had to be reversed), the joined end is b's far end (b's cap, when b has a
+ * stroke). (Closing a path's own two ends is `closeEnds`.)
  */
 export function joinContours(
   a: Contour,
   b: Contour,
   aAtStart: boolean,
   bAtStart: boolean,
+  fuse = true,
 ): Contour {
-  const aOriented = aAtStart ? reverseContour(a) : a; // chosen end becomes last
-  const bOriented = bAtStart ? b : reverseContour(b); // chosen end becomes first
-
-  const points = [
-    ...aOriented.points.map(clonePoint),
-    ...bOriented.points.slice(1).map(clonePoint),
-  ];
-  const joined: Contour = { id: createId("ct"), closed: false, points };
-  if (a.stroke) joined.stroke = structuredClone(a.stroke);
+  const aPts = (aAtStart ? reverseInPlace(a) : a).points.map(clonePoint); // chosen end last
+  const bPts = (bAtStart ? b : reverseInPlace(b)).points.map(clonePoint); // chosen end first
+  const points = fuse
+    ? [...aPts.slice(0, -1), fuseNodes(aPts[aPts.length - 1]!, "handleIn", bPts[0]!, "handleOut"), ...bPts.slice(1)]
+    : [...aPts, ...bPts];
+  const joined = pieceOf(a, points, false);
+  if (joined.stroke && a.stroke) {
+    copyEnd(joined.stroke, a.stroke, aAtStart ? "end" : "start", "start");
+    if (b.stroke) copyEnd(joined.stroke, b.stroke, bAtStart ? "end" : "start", "end");
+    else copyEnd(joined.stroke, a.stroke, aAtStart ? "start" : "end", "end");
+  }
   return joined;
+}
+
+/**
+ * Close an open contour by joining its own two ends. With `dropAt` the end on that side
+ * is merged INTO the other (`fuseNodes`, so its curve keeps its shape and no zero-length
+ * closing segment is left at the seam); without it a closing segment is added.
+ */
+export function closeEnds(contour: Contour, dropAt?: "start" | "end"): Contour {
+  const pts = contour.points.map(clonePoint);
+  if (dropAt && pts.length >= 3) {
+    const first = pts[0]!;
+    const last = pts[pts.length - 1]!;
+    const points =
+      dropAt === "end"
+        ? [fuseNodes(first, "handleOut", last, "handleIn"), ...pts.slice(1, -1)]
+        : [...pts.slice(1, -1), fuseNodes(last, "handleIn", first, "handleOut")];
+    return { ...contour, closed: true, points };
+  }
+  return { ...contour, closed: true, points: pts };
 }
 
 const HANDLE_EPS = 1e-6;
@@ -165,7 +254,7 @@ function setHandle(p: AnchorPoint, key: "handleIn" | "handleOut", v: Vec2): void
   else p.handleOut = { x: v.x, y: v.y };
 }
 
-/** One open fragment from `points`, carrying `src`'s paint/stroke; a `"butt"` end
+/** One open fragment from `points`, carrying every field of `src`; a `"butt"` end
  *  overrides that cap (a freshly cut terminal), a `"keep"` end keeps the original. */
 function makeCut(
   src: Contour,
@@ -173,13 +262,10 @@ function makeCut(
   startCap: "keep" | "butt",
   endCap: "keep" | "butt",
 ): Contour {
-  const frag: Contour = { id: createId("ct"), closed: false, points };
-  if (src.paint) frag.paint = { ...src.paint };
-  if (src.stroke) {
-    const stroke = structuredClone(src.stroke);
-    if (startCap === "butt") stroke.startCap = "butt";
-    if (endCap === "butt") stroke.endCap = "butt";
-    frag.stroke = stroke;
+  const frag = pieceOf(src, points, false);
+  if (frag.stroke) {
+    if (startCap === "butt") frag.stroke.startCap = "butt";
+    if (endCap === "butt") frag.stroke.endCap = "butt";
   }
   return frag;
 }

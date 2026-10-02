@@ -346,15 +346,20 @@ export function commandsInGroup(group: string): Command[] {
  *  code stays decoupled from the Command type. */
 export function commandMenuItems(
   ids: string[],
-): { label: string; onSelect: () => void; disabled: boolean }[] {
+  { keepHidden = false }: { keepHidden?: boolean } = {},
+): { label: string; onSelect: () => void; disabled: boolean; shortcut?: string }[] {
+  // A right-click menu hides commands that don't apply; a menu-BAR menu keeps them,
+  // disabled (`keepHidden`), so its layout is stable and every action is discoverable.
   return ids
     .map(commandById)
-    .filter((c): c is Command => !!c && c.isVisible?.() !== false)
-    .map((c) => ({
-      label: c.label,
-      onSelect: c.run,
-      disabled: c.isEnabled ? !c.isEnabled() : false,
-    }));
+    .filter((c): c is Command => !!c && (keepHidden || c.isVisible?.() !== false))
+    .map((c) => {
+      const chord = effectiveKeys(c)[0];
+      const disabled = c.isVisible?.() === false || (c.isEnabled ? !c.isEnabled() : false);
+      return chord
+        ? { label: c.label, onSelect: c.run, disabled, shortcut: formatChord(chord) }
+        : { label: c.label, onSelect: c.run, disabled };
+    });
 }
 
 /** Normalize an event key: single characters lowercased (so Shift-affected case

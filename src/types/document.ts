@@ -12,10 +12,10 @@ export interface Layer {
   visible: boolean;
   locked: boolean;
   contours: Contour[];
-  /** A flattened (merged) layer: its contours are FINAL baked geometry — rendered
-   *  as-is (winding preserved for holes, no stroke expansion, no force-CW union).
-   *  Set by the destructive "Merge layers" op; optional so old saves load unchanged. */
-  baked?: boolean;
+  // (There is no layer-level `baked` flag any more: "final geometry, render verbatim" is
+  //  per CONTOUR — `Contour.baked`, projectFile v9. A layer flag made everything drawn
+  //  later onto an imported/merged layer render verbatim too: strokes ignored, an open
+  //  path filled. Older files are converted on load by `liftLayerBaked`.)
   /** The `LayerGroup` this layer belongs to, if any (see `Glyph.layerGroups`).
    *  Optional/additive so old saves load unchanged; `undefined` = top level. */
   groupId?: string;

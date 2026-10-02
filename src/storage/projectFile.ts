@@ -1,5 +1,6 @@
-import type { Glyph } from "../types/document";
+import type { Glyph, Layer } from "../types/document";
 import { sanitizeGlyph } from "./sanitize";
+import { markBaked } from "../state/glyphHelpers";
 
 /**
  * The on-disk project format and its migration seam. The whole point of building
@@ -17,7 +18,7 @@ import { sanitizeGlyph } from "./sanitize";
  * defaults. That is the rework this design is meant to avoid.
  */
 
-export const CURRENT_VERSION = 8 as const;
+export const CURRENT_VERSION = 9 as const;
 
 /** KV keys. The backup is the previous main, kept so a corrupt write is recoverable. */
 export const STORAGE_KEY = "glyphdraft:project";
@@ -27,6 +28,12 @@ export const CORRUPT_KEY = "glyphdraft:project.corrupt";
 /** The workspace as it was just before the last "Import project…" replaced it — the
  *  autosave rotation never touches this key, so an import is always recoverable. */
 export const PREIMPORT_KEY = "glyphdraft:project.preimport";
+/** The workspace as it was when THIS session loaded it, and the one before that — written
+ *  once per launch, outside the autosave rotation. The backup slot is only the previous
+ *  save (~a second old), so it can't undo a non-undoable mistake such as deleting a
+ *  glyph; these can (File → Restore previous version…). */
+export const SESSION_KEY = "glyphdraft:project.session";
+export const SESSION_PREV_KEY = "glyphdraft:project.session.prev";
 
 export interface ProjectFileV1 {
   version: 1;
@@ -95,7 +102,18 @@ export interface ProjectFileV8 {
   glyphs: Record<string, Glyph>;
 }
 
-export type ProjectFile = ProjectFileV8;
+/** v9 moved "baked" (final geometry, rendered verbatim) from the LAYER to each CONTOUR
+ *  (`Contour.baked`). With a layer flag, anything drawn later on an imported / merged /
+ *  expanded layer rendered verbatim too (strokes ignored, open paths filled), and baked
+ *  art pasted elsewhere lost its holes. Not additive: older files are converted by
+ *  `liftLayerBaked` (applied on every load, so it is idempotent). */
+export interface ProjectFileV9 {
+  version: 9;
+  savedAt: number;
+  glyphs: Record<string, Glyph>;
+}
+
+export type ProjectFile = ProjectFileV9;
 
 /** Wrap the live glyph map in the current envelope for persistence. */
 export function serializeProject(glyphs: Record<string, Glyph>): ProjectFile {
@@ -146,8 +164,16 @@ function asGlyphMap(x: unknown): Record<string, Glyph> | null {
  * JSON-parses), so no JSON.parse happens here.
  */
 export function migrate(raw: unknown): Record<string, Glyph> | null {
+  const glyphs = readGlyphs(raw);
+  return glyphs ? liftLayerBaked(glyphs) : null;
+}
+
+/** Version dispatch: the glyph map stored in `raw`, brought up to the v8 shape. */
+function readGlyphs(raw: unknown): Record<string, Glyph> | null {
   if (!isRecord(raw)) return null;
-  if (raw.version === CURRENT_VERSION) return asGlyphMap(raw.glyphs);
+  // v8 → v9 (per-contour `baked`) is `liftLayerBaked`, applied by `migrate` to every
+  // version, so v8 reads exactly like v9 here.
+  if (raw.version === CURRENT_VERSION || raw.version === 8) return asGlyphMap(raw.glyphs);
   // v7 → v8 (layer groups: optional `Layer.groupId` + `Glyph.layerGroups`),
   // v6 → v7 (optional `Contour.filled` + `StrokeStyle.color`), v5 → v6 (the `"blend"`
   // pair op + `BooleanPair.steps`), v4 → v5 (optional `paint.gradient`), v3 → v4 (optional
@@ -175,6 +201,32 @@ export function migrate(raw: unknown): Record<string, Glyph> | null {
     return glyphs ? migrateSquareCaps(glyphs) : null;
   }
   return null; // a version we don't know how to read
+}
+
+/**
+ * v8 → v9: lift a legacy LAYER-level `baked: true` onto every contour of that layer
+ * (`Contour.baked`) and drop the layer flag.
+ *
+ * IMMUTABLE on purpose: persistence validates the stored main slot with `migrate` and then
+ * promotes that very value to the backup slot, so mutating it here would rewrite the
+ * backup in a shape its own version header doesn't describe. Returns the SAME map when no
+ * layer carries the flag, so a current document costs nothing and stays identity-stable.
+ */
+function liftLayerBaked(glyphs: Record<string, Glyph>): Record<string, Glyph> {
+  let changed = false;
+  const out: Record<string, Glyph> = {};
+  for (const [key, glyph] of Object.entries(glyphs)) {
+    let glyphChanged = false;
+    const layers = glyph.layers.map((layer) => {
+      if (!("baked" in layer)) return layer;
+      glyphChanged = true;
+      const { baked, ...rest } = layer as Layer & { baked?: unknown };
+      return baked === true ? { ...rest, contours: markBaked(rest.contours) } : rest;
+    });
+    out[key] = glyphChanged ? { ...glyph, layers } : glyph;
+    if (glyphChanged) changed = true;
+  }
+  return changed ? out : glyphs;
 }
 
 /**

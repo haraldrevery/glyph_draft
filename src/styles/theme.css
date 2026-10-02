@@ -173,6 +173,32 @@ body {
   color: #e06c6c;
 }
 
+/* File-operation notices (import / export / restore) — beside the save status, but a
+ * separate line so a bad import file never reads as "Save failed". */
+.notice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.notice-err {
+  color: #e06c6c;
+}
+.notice + .save-status {
+  margin-left: var(--space-3);
+}
+.notice-dismiss {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
 .menu {
   position: relative;
 }
@@ -275,6 +301,20 @@ body {
 
 .menu-item-wrap > .menu-item {
   flex: 1;
+}
+
+/* A row with a keyboard shortcut: label left, shortcut right (menubar + right-click). */
+.menu-item-keyed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.menu-shortcut {
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .menu-item-parent {
@@ -738,16 +778,6 @@ body {
   gap: var(--space-1);
 }
 
-/* "Add current colour" row (a colour action) — kept visually with the palette swatches. */
-.fill-palette-add {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.fill-palette-hint {
-  font-size: 11px;
-  color: var(--text-muted);
-}
 /* Administrative palette controls (rename / delete / new) — a labeled, separated block. */
 .fill-palette-manage {
   display: flex;
@@ -962,6 +992,14 @@ body {
 .fill-swatch.is-active {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+/* The "+" tile at the end of a palette row: add the section's current colour. */
+.fill-swatch-add {
+  background: transparent;
+  border-style: dashed;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
 }
 
 /* Angle knob (gradient direction). */
@@ -1297,6 +1335,34 @@ body {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
+}
+
+/* File → Restore… */
+.recover-dialog {
+  width: 340px;
+}
+.recover-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.recover-item {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  gap: var(--space-3);
+  text-align: left;
+}
+.recover-meta,
+.recover-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.recover-empty {
+  margin: 0;
 }
 
 /* ---------- Toggle ---------- */

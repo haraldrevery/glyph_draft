@@ -543,12 +543,11 @@ export class PaperGeometryService implements GeometryService {
 
     if (!result) return [];
 
-    // Dissolve any self-overlap in the swept body so a sharp bend fills solid
-    // instead of punching an "exclude" hole. Idempotent for the uniform branch
-    // (sweptUniform already unions); the safety net for the open sampled ribbon.
-    // A CLOSED sampled annulus is already a clean ring (outer + reversed inner) and
-    // uniting it with itself would dissolve the hole — so skip solidify there.
-    if (!contour.closed) result = solidify(result);
+    // No second self-union here. Every open-path body above is already free of
+    // self-overlap — `sampledOutline` solidifies its ribbon, `sweptUniform` builds on
+    // that plus unions, and the brush envelopes are unions — so a sharp bend already
+    // fills solid. Re-uniting it cost ~40% of the expansion time and changed nothing
+    // (a CLOSED sampled annulus must never be self-united anyway: it would lose its hole).
 
     // Per-end finishing: drop → close the swollen pool with a TANGENT round cap (the
     // body is already width dropR there, so the disc meets it seamlessly); serif → the
@@ -740,7 +739,10 @@ function sweptUniform(
     const aOut = anchor.add(outerN(tOut).multiply(r));
     const apex = lineIntersect(aIn, tIn, aOut, tOut);
     if (apex && apex.subtract(anchor).length <= miterLimit * r) {
-      const tri = new scope.Path([aIn, apex, aOut]);
+      // Include the corner anchor itself: the sampled ribbon chords the corner, so a bare
+      // [aIn, apex, aOut] triangle could miss the body by a hair and survive the union
+      // as a detached speck. Anchored at the node it always overlaps the body.
+      const tri = new scope.Path([anchor, aIn, apex, aOut]);
       tri.closed = true;
       body = body.unite(tri, { insert: false });
     }
@@ -765,6 +767,47 @@ function halftonePatternPath(contours: Contour[]): paper.PathItem {
     halftonePatternCache.set(contours, p);
   }
   return p;
+}
+
+/**
+ * The halftone grid cells `[i, j]` (indices into the rotated grid's u / v axes) that can
+ * lie within `r` of an OPEN centerline — a superset of the stroke band, in the order the
+ * full `for u { for v }` scan visits them (ascending i, then j).
+ *
+ * Sample the line every `ds`; any grid point within `r` of the line is within
+ * `r + ds/2` of some sample, so marking each sample's surrounding square of half-size
+ * `R = r + ds` (±1 cell for float drift) is guaranteed to cover it.
+ */
+function halftoneBandCells(
+  center: paper.Path,
+  r: number,
+  cell: number,
+  reach: number,
+  count: number,
+  cx: number,
+  cy: number,
+  cos: number,
+  sin: number,
+): [number, number][] {
+  const len = center.length;
+  const ds = Math.max(r / 2, cell / 2, len / 4000, 0.5);
+  const R = r + ds;
+  const last = count - 1;
+  const lo = (x: number) => Math.max(0, Math.floor((x - R + reach) / cell) - 1);
+  const hi = (x: number) => Math.min(last, Math.ceil((x + R + reach) / cell) + 1);
+  const marked = new Set<number>();
+  const steps = Math.max(1, Math.ceil(len / ds));
+  for (let k = 0; k <= steps; k += 1) {
+    const q = center.getPointAt((len * k) / steps) ?? center.lastSegment.point;
+    const dx = q.x - cx;
+    const dy = q.y - cy;
+    const uq = dx * cos + dy * sin; // the grid frame: P = c + u·(cos, sin) + v·(−sin, cos)
+    const vq = -dx * sin + dy * cos;
+    for (let i = lo(uq), i1 = hi(uq); i <= i1; i += 1) {
+      for (let j = lo(vq), j1 = hi(vq); j <= j1; j += 1) marked.add(i * count + j);
+    }
+  }
+  return [...marked].sort((a, b) => a - b).map((key) => [Math.floor(key / count), key % count]);
 }
 
 /** One detached halftone element of radius `dotR` at `P`, rotated to the screen angle.
@@ -837,7 +880,15 @@ function halftoneStroke(
   // Effective pitch, clamped up so the grid can't explode on a tiny cell.
   let cell = Math.max(style.cell, 1);
   if ((b.width / cell + 1) * (b.height / cell + 1) > maxCells) {
-    cell = Math.sqrt((b.width * b.height) / maxCells);
+    // For a CLOSED path the box ≈ the filled interior, so the box sets the pitch. An OPEN
+    // path only ever tests the band within `r` of its line (see halftoneBandCells), and a
+    // long DIAGONAL line has a huge, nearly empty box — pitching from the box made its
+    // dots vanish. Pitch an open path from the band's own cell count instead.
+    if (closed) cell = Math.sqrt((b.width * b.height) / maxCells);
+    else {
+      const band = ((center.length + 2 * r) * 2 * r) / (cell * cell);
+      if (band > maxCells) cell *= Math.sqrt(band / maxCells);
+    }
   }
   const maxR = Math.max(style.size, 0) / 2;
   if (maxR < 0.3) return [];
@@ -853,35 +904,51 @@ function halftoneStroke(
   const fallbackShape: HalftoneShape = style.shape === "svg" ? "circle" : style.shape;
   // The rotated grid must cover the whole box ⇒ sweep ±the half-diagonal in its own frame.
   const reach = Math.hypot(b.width, b.height) / 2 + cell;
+  // The grid's coordinates along each rotated axis, accumulated exactly like the nested
+  // `+= cell` loops this replaced, so the lattice (and thus the output) is bit-identical.
+  const axis: number[] = [];
+  for (let x = -reach; x <= reach; x += cell) axis.push(x);
   // Flat list of simple sub-paths (a CompoundPath's children must be plain Paths, so an
   // svg-pattern stamp is flattened into its sub-paths here).
   const children: paper.Path[] = [];
-  for (let u = -reach; u <= reach; u += cell) {
-    for (let v = -reach; v <= reach; v += cell) {
-      const P = new scope.Point(cx + u * cos - v * sin, cy + u * sin + v * cos);
+  const visit = (u: number, v: number): void => {
+    const P = new scope.Point(cx + u * cos - v * sin, cy + u * sin + v * cos);
+    let dotR: number;
+    if (closed) {
+      // Inside-tests first (the box test is free): getNearestPoint is the expensive call,
+      // and a point outside the shape never makes a dot anyway.
+      if (!b.contains(P) || !body.contains(P)) return; // only inside the shape
       const near = center.getNearestPoint(P);
-      if (!near) continue;
-      const dist = P.getDistance(near); // distance to centerline (open) / boundary (closed)
-      let dotR: number;
-      if (closed) {
-        if (!body.contains(P)) continue; // only inside the shape
-        dotR = maxR * Math.pow(Math.min(dist / r, 1), gamma); // full deep inside → 0 at the edge
-      } else {
-        if (dist > r) continue; // outside the stroke band
-        dotR = maxR * Math.pow(1 - dist / r, gamma); // fade to 0 at the edge
-      }
-      if (dotR < 0.3) continue;
-      if (patternBase) {
-        // Stamp the unit pattern: scale to diameter 2·dotR, rotate to the screen angle,
-        // move to P (the base is centred at the origin and never mutated).
-        const stamp = patternBase.clone({ insert: false }) as paper.CompoundPath;
-        stamp.scale(2 * dotR, origin);
-        if (style.angle !== 0) stamp.rotate(style.angle, origin);
-        stamp.translate(P);
-        for (const sp of stamp.children as paper.Path[]) children.push(sp);
-      } else {
-        children.push(halftoneShape(P, dotR, fallbackShape, style.angle, cell));
-      }
+      if (!near) return;
+      const dist = P.getDistance(near); // distance to the boundary
+      dotR = maxR * Math.pow(Math.min(dist / r, 1), gamma); // full deep inside → 0 at the edge
+    } else {
+      const near = center.getNearestPoint(P);
+      if (!near) return;
+      const dist = P.getDistance(near); // distance to the centerline
+      if (dist > r) return; // outside the stroke band
+      dotR = maxR * Math.pow(1 - dist / r, gamma); // fade to 0 at the edge
+    }
+    if (dotR < 0.3) return;
+    if (patternBase) {
+      // Stamp the unit pattern: scale to diameter 2·dotR, rotate to the screen angle,
+      // move to P (the base is centred at the origin and never mutated).
+      const stamp = patternBase.clone({ insert: false }) as paper.CompoundPath;
+      stamp.scale(2 * dotR, origin);
+      if (style.angle !== 0) stamp.rotate(style.angle, origin);
+      stamp.translate(P);
+      for (const sp of stamp.children as paper.Path[]) children.push(sp);
+    } else {
+      children.push(halftoneShape(P, dotR, fallbackShape, style.angle, cell));
+    }
+  };
+  if (closed) {
+    for (const u of axis) for (const v of axis) visit(u, v);
+  } else {
+    // Only the grid points near the line can be in the band — testing the whole rotated
+    // square cost ~150× the cap on a long thin stroke. Same points, same order.
+    for (const [i, j] of halftoneBandCells(center, r, cell, reach, axis.length, cx, cy, cos, sin)) {
+      visit(axis[i]!, axis[j]!);
     }
   }
   if (children.length === 0) return [];
@@ -1302,6 +1369,50 @@ function terminalCut(p: paper.Point, outward: paper.Point, big: number): paper.P
 }
 
 /**
+ * Slice off the body material past a plane at ONE terminal — never the rest of the stroke.
+ *
+ * A bare `body.subtract(halfPlane)` removes EVERYTHING on the far side of the plane, and
+ * a curving stroke (an S, C, J, a hook) routinely passes back in front of its own end:
+ * that subtract deleted most of such a stroke. So split `body ∩ halfPlane` into its
+ * pieces and remove only those attached at the terminal (within `reach` of `anchor`).
+ *
+ * When every piece beyond the plane is local — the only case a straight stem can produce —
+ * this performs the exact original subtract, so those outputs are unchanged.
+ */
+function cutPastPlane(
+  body: paper.PathItem,
+  anchor: paper.Point,
+  outward: paper.Point,
+  big: number,
+  reach: number,
+): paper.PathItem {
+  const plane = terminalCut(anchor, outward, big);
+  const beyond = body.intersect(plane, { insert: false });
+  const pieces = (
+    beyond instanceof scope.CompoundPath ? (beyond.children as paper.Path[]) : [beyond as paper.Path]
+  ).filter((pc) => pc.segments && pc.segments.length >= 2);
+  const isLocal = (pc: paper.Path): boolean => {
+    if (pc.contains(anchor)) return true;
+    const near = pc.getNearestPoint(anchor);
+    return !!near && near.getDistance(anchor) <= reach;
+  };
+  const local = pieces.filter(isLocal);
+  // A piece is "near" when it lies wholly within `reach` of the anchor — the material a
+  // terminal cut is meant to remove. One reaching further is a stem the plane runs almost
+  // ALONG (a cap axis nearly parallel to the path): only its part near the terminal goes.
+  const withinReach = (pc: paper.Path): boolean => {
+    const b = pc.bounds;
+    return [b.topLeft, b.topRight, b.bottomLeft, b.bottomRight].every((c) => c.getDistance(anchor) <= reach);
+  };
+  if (local.length === pieces.length && local.every(withinReach)) return body.subtract(plane, { insert: false });
+  if (local.length === 0) return body;
+  // (A hole child selected on its own is harmless: its interior is not body material.)
+  const pieceSet = new scope.CompoundPath({ children: local.map((pc) => pc.clone({ insert: false })), insert: false });
+  const cut = pieceSet.intersect(new scope.Path.Circle({ center: anchor, radius: reach, insert: false }), { insert: false });
+  return body.subtract(cut, { insert: false });
+}
+
+/**
  * Re-cut a terminal flat along a CAP-ANGLE handle: extend the body past the node along
  * the tangent (so there is material on both sides of the cut), then slice it at the
  * plane through the node ⟂ the handle axis. The flat butt then tracks the handle
@@ -1325,7 +1436,9 @@ function angledTerminal(
   // Slice at the handle plane: its outward normal is the handle axis oriented to agree
   // with the outward tangent, so everything past the node along the handle is removed.
   const axisOut = axisDir.dot(tan) >= 0 ? axisDir : axisDir.multiply(-1);
-  return body.unite(ext, { insert: false }).subtract(terminalCut(p, axisOut, big), { insert: false });
+  // Reach covers the whole extension (its far corners sit ~3.2·half from the node), so
+  // every bit of it past the plane is always removed.
+  return cutPastPlane(body.unite(ext, { insert: false }), p, axisOut, big, 4 * half + 1);
 }
 
 /** Intersection of the lines through `p1` (dir `d1`) and `p2` (dir `d2`), or null
@@ -1392,11 +1505,14 @@ function withCap(
     // A (crisp): union the slab, then slice off any body projecting past the far-edge
     // plane (⟂ axis) — so a tilted/narrow slab can't leave the butt corners sticking
     // out. For the auto case (far edge on the node ⟂ tangent) the body ends at the node,
-    // so the cut removes nothing → byte-identical to the old union-box.
+    // so the cut removes nothing → byte-identical to the old union-box. The cut is
+    // LOCAL to this terminal (cutPastPlane): the rest of a curving stroke that happens
+    // to lie past the plane is never touched.
     const big = body.bounds.width + body.bounds.height + r * 4 + 100;
-    return body
-      .unite(rectCap(point, t, r, style), { insert: false })
-      .subtract(rectFarCut(point, t, style, big), { insert: false });
+    const { anchor, axis } = rectFarPlane(point, t, style);
+    const halfW = r * Math.max(style.ratio, 0.01);
+    const reach = 2 * Math.max(r, halfW) + Math.max(style.size, 0) + 1;
+    return cutPastPlane(body.unite(rectCap(point, t, r, style), { insert: false }), anchor, axis, big, reach);
   }
   return body; // butt — sweptUniform already capped flat
 }
@@ -1411,7 +1527,8 @@ function footAxis(outwardTan: paper.Point, angleDeg: number | null | undefined):
 }
 
 /**
- * The CONSTRUCTIVE foot hull shared by serif-B and rectangle-B: a flat far edge of
+ * The CONSTRUCTIVE foot hull behind rectangle-B (serif-B is built into the sampled
+ * outline instead, so it no longer uses this): a flat far edge of
  * half-widths `halfL`/`halfR` (⟂ `axis`) at `proj` past the node, joined to the stem
  * edges (±`r`, `reach` up the stem) by concave fillets scaled by `bracket` (0 = a
  * straight trapezoid). Because it's constructed — not an offset of a kinked angled
@@ -1500,28 +1617,18 @@ function rectFlareB(
   return body.unite(hull, { insert: false });
 }
 
-/** The half-plane to slice off body material projecting PAST a rectangle slab's far
- *  edge (⟂ the cap axis), so a tilted/narrow slab can't leave the stem's butt corners
- *  sticking out. Used by the rectangle-A (crisp) cap. */
-function rectFarCut(
+/** The plane of a rectangle slab's far edge (⟂ the cap axis): body material past it is
+ *  sliced off so a tilted/narrow slab can't leave the stem's butt corners sticking out.
+ *  Used by the rectangle-A (crisp) cap, through `cutPastPlane`. */
+function rectFarPlane(
   point: paper.Point,
   outwardTan: paper.Point,
   style: RectCapStyle,
-  big: number,
-): paper.Path {
+): { anchor: paper.Point; axis: paper.Point } {
   const axis = footAxis(outwardTan, style.angle);
   const depth = Math.max(style.size, 0);
-  const farCenter = (style.anchor ?? "node") === "outward" ? point.add(axis.multiply(depth)) : point;
-  const perp = new scope.Point(-axis.y, axis.x).multiply(big);
-  const out = axis.multiply(big);
-  const plane = new scope.Path([
-    farCenter.add(perp),
-    farCenter.subtract(perp),
-    farCenter.subtract(perp).add(out),
-    farCenter.add(perp).add(out),
-  ]);
-  plane.closed = true;
-  return plane;
+  const anchor = (style.anchor ?? "node") === "outward" ? point.add(axis.multiply(depth)) : point;
+  return { anchor, axis };
 }
 
 /**

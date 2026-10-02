@@ -122,3 +122,51 @@ describe("migrate", () => {
     expect(migrate({ version: 99, glyphs })).toBeNull();
   });
 });
+
+describe("v8 → v9: baked moves from the layer to its contours", () => {
+  const sq = (id: string) => ({
+    id,
+    closed: true,
+    points: [
+      { id: `${id}0`, type: "corner" as const, x: 0, y: 0 },
+      { id: `${id}1`, type: "corner" as const, x: 0, y: 10 },
+      { id: `${id}2`, type: "corner" as const, x: 10, y: 10 },
+    ],
+  });
+  const v8 = () => ({
+    version: 8,
+    savedAt: 0,
+    glyphs: {
+      g1: {
+        id: "g1",
+        codepoint: 0x41,
+        name: "A",
+        advanceWidth: 600,
+        layers: [
+          { id: "imp", name: "Imported", visible: true, locked: false, baked: true, contours: [sq("a"), sq("b")] },
+          { id: "plain", name: "Plain", visible: true, locked: false, contours: [sq("c")] },
+        ],
+      },
+    },
+  });
+
+  it("marks every contour of a baked layer and drops the layer flag", () => {
+    const out = migrate(v8())!;
+    const [imp, plain] = out["g1"]!.layers;
+    expect("baked" in imp!).toBe(false);
+    expect(imp!.contours.every((c) => c.baked === true)).toBe(true);
+    expect(plain!.contours[0]!.baked).toBeUndefined(); // an ordinary layer is untouched
+  });
+
+  it("does not mutate the stored value (persistence promotes it to the backup as-is)", () => {
+    const raw = v8();
+    const snapshot = JSON.stringify(raw);
+    migrate(raw);
+    expect(JSON.stringify(raw)).toBe(snapshot);
+  });
+
+  it("returns a current document's glyph map unchanged (identity)", () => {
+    const file = serializeProject(glyphs);
+    expect(migrate(file)).toBe(glyphs);
+  });
+});

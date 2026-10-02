@@ -2,9 +2,16 @@ import type { Glyph } from "../../types/document";
 import { useDocumentStore } from "../../state/documentStore";
 import { useEditorStore } from "../../state/editorStore";
 import { useHistoryStore } from "../../state/history";
-import { saveNow, useSaveStatus } from "../../state/persistence";
+import { saveNow } from "../../state/persistence";
+import { notify } from "../../state/noticeStore";
 import { createStorage } from "../../storage/createStorage";
-import { serializeProject, migrate, PREIMPORT_KEY } from "../../storage/projectFile";
+import {
+  serializeProject,
+  migrate,
+  PREIMPORT_KEY,
+  SESSION_KEY,
+  SESSION_PREV_KEY,
+} from "../../storage/projectFile";
 import { createProjectIO } from "./ProjectIOService";
 
 /**
@@ -66,7 +73,8 @@ export function applyImportedProject(json: string): { ok: boolean; error?: strin
  * Replace the workspace with already-validated glyphs, after snapshotting the
  * current one under PREIMPORT_KEY. The autosave rotation would otherwise push the old
  * workspace out of both slots within one more save, making an import irreversible.
- * The snapshot is best-effort: the user has already confirmed the replacement.
+ * The snapshot is best-effort: the user has already confirmed the replacement. (Used
+ * for File → Restore previous version… too, so a restore is itself reversible.)
  */
 export async function replaceWorkspace(glyphs: Record<string, Glyph>): Promise<void> {
   try {
@@ -84,10 +92,7 @@ export async function exportProject(): Promise<void> {
   try {
     await io.exportProject(serializeCurrentProject(), DEFAULT_NAME);
   } catch (err) {
-    useSaveStatus.setState({
-      state: "error",
-      error: err instanceof Error ? err.message : "Export failed",
-    });
+    notify(`Project export failed: ${err instanceof Error ? err.message : "unknown error"}`);
   }
 }
 
@@ -95,6 +100,40 @@ export async function exportProject(): Promise<void> {
 export interface PendingImport {
   glyphs: Record<string, Glyph>;
   glyphCount: number;
+  /** What replaces the workspace, for the confirm message ("the imported project"). */
+  source: string;
+}
+
+/** A stored workspace the user can go back to (File → Restore previous version…). */
+export interface RecoveryPoint {
+  key: string;
+  label: string;
+  savedAt: number;
+  glyphs: Record<string, Glyph>;
+  glyphCount: number;
+}
+
+const RECOVERY_SLOTS: { key: string; label: string }[] = [
+  { key: SESSION_KEY, label: "Start of this session" },
+  { key: SESSION_PREV_KEY, label: "Start of the previous session" },
+  { key: PREIMPORT_KEY, label: "Before the last import / restore" },
+];
+
+/**
+ * The recovery points currently stored, each validated through `migrate` (so a
+ * damaged one is skipped, never offered). Never touches the document.
+ */
+export async function listRecoveryPoints(): Promise<RecoveryPoint[]> {
+  const storage = await createStorage();
+  const points: RecoveryPoint[] = [];
+  for (const { key, label } of RECOVERY_SLOTS) {
+    const raw = await storage.getItem<unknown>(key).catch(() => null);
+    const glyphs = raw != null ? migrate(raw) : null;
+    if (!glyphs) continue;
+    const savedAt = typeof (raw as { savedAt?: unknown }).savedAt === "number" ? (raw as { savedAt: number }).savedAt : 0;
+    points.push({ key, label, savedAt, glyphs, glyphCount: Object.keys(glyphs).length });
+  }
+  return points;
 }
 
 /**
@@ -110,18 +149,19 @@ export async function pickProject(): Promise<PendingImport | null> {
   try {
     result = await io.importProject();
   } catch (err) {
-    useSaveStatus.setState({
-      state: "error",
-      error: err instanceof Error ? err.message : "Import failed",
-    });
+    notify(`Project import failed: ${err instanceof Error ? err.message : "unknown error"}`);
     return null;
   }
   if (result.cancelled || result.json == null) return null;
 
   const parsed = parseProject(result.json);
   if (!parsed.ok) {
-    useSaveStatus.setState({ state: "error", error: parsed.error });
+    notify(parsed.error);
     return null;
   }
-  return { glyphs: parsed.glyphs, glyphCount: Object.keys(parsed.glyphs).length };
+  return {
+    glyphs: parsed.glyphs,
+    glyphCount: Object.keys(parsed.glyphs).length,
+    source: "the imported project",
+  };
 }

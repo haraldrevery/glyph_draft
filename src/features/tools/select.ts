@@ -293,7 +293,7 @@ export const selectTool: ToolDefinition = {
       // joinEndpoints only fuses within one layer, so a cross-layer target must
       // fall through to the normal move commit — otherwise the drag is lost.
       if (target && target.layerId === ep.layerId) {
-        ctx.doc.joinEndpoints(ep, target);
+        ctx.doc.joinEndpoints(ep, target, "merge"); // the dragged end is absorbed
         drag = null;
         ctx.editor.setLiveContours(null);
         ctx.editor.setHover(null);

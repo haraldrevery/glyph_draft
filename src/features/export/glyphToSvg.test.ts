@@ -104,7 +104,7 @@ describe("glyphToSvg", () => {
     // coordinate out — so the frame math must survive it on its own. A NaN in the
     // viewBox makes the WHOLE file render as nothing, not just the bad path.
     const bad = poly("bad", [[NaN, 0], [100, 0], [100, 100]]);
-    const g = glyph([{ ...layer("LA", [bad, BIG]), baked: true }]);
+    const g = glyph([layer("LA", [bad, BIG].map((c) => ({ ...c, baked: true })))]);
     for (const svg of [glyphToSvg(g, DEFAULT_METRICS), glyphToSvg(g, DEFAULT_METRICS, { tightCrop: true })]) {
       const vb = svg.match(/viewBox="([^"]+)"/)![1]!;
       expect(vb).not.toContain("NaN");
@@ -223,8 +223,10 @@ describe("glyphToSvg", () => {
       name: "M",
       visible: true,
       locked: false,
-      baked: true,
-      contours: [BIG, poly("h", [[250, 250], [250, 450], [350, 450], [350, 250]])], // CCW hole
+      contours: [BIG, poly("h", [[250, 250], [250, 450], [350, 450], [350, 250]])].map((c) => ({
+        ...c,
+        baked: true,
+      })), // CW outer + CCW hole
     });
     const svg = glyphToSvg(glyph([ring()]), DEFAULT_METRICS);
     const fills = svg.match(/<path /g) ?? [];

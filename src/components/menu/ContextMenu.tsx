@@ -17,6 +17,8 @@ export interface ContextMenuItem {
   disabled?: boolean;
   /** When present, the item opens this nested list on hover instead of acting. */
   submenu?: ContextMenuItem[];
+  /** The bound keyboard shortcut, shown right-aligned (e.g. "Ctrl Z"). */
+  shortcut?: string;
 }
 
 export interface ContextMenuState {
@@ -87,7 +89,7 @@ function MenuList({
             <button
               type="button"
               role="menuitem"
-              className={hasSub ? "menu-item menu-item-parent" : "menu-item"}
+              className={hasSub ? "menu-item menu-item-parent" : item.shortcut ? "menu-item menu-item-keyed" : "menu-item"}
               disabled={item.disabled ?? false}
               onClick={() => {
                 if (hasSub) return; // parent only opens its submenu
@@ -97,6 +99,7 @@ function MenuList({
             >
               <span>{item.label}</span>
               {hasSub && <span className="menu-item-arrow">▸</span>}
+              {!hasSub && item.shortcut && <span className="menu-shortcut">{item.shortcut}</span>}
             </button>
             {hasSub &&
               open === i &&

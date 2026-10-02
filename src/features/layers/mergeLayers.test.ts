@@ -54,7 +54,7 @@ describe("mergeLayers", () => {
 
     const ls = layers();
     expect(ls).toHaveLength(1);
-    expect(ls[0]!.baked).toBe(true);
+    expect(ls[0]!.contours.every((c) => c.baked)).toBe(true);
     expect(ls[0]!.contours).toHaveLength(2); // outer + hole
     expect(contourWinding(ls[0]!.contours[0]!)).toBe("cw"); // outer
     expect(contourWinding(ls[0]!.contours[1]!)).toBe("ccw"); // hole preserved
@@ -72,7 +72,7 @@ describe("mergeLayers", () => {
     mergeLayers(["LA", "LB"]);
     const ls = layers();
     expect(ls).toHaveLength(1);
-    expect(ls[0]!.baked).toBe(true);
+    expect(ls[0]!.contours.every((c) => c.baked)).toBe(true);
     // Two unpaired layers → two solid (CW) regions, baked verbatim.
     for (const c of ls[0]!.contours) expect(contourWinding(c)).toBe("cw");
   });

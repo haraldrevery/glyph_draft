@@ -108,9 +108,12 @@ export function reverseContour(contour: Contour): Contour {
     .slice()
     .reverse()
     .map((p) => {
-      const swapped: AnchorPoint = { id: p.id, type: p.type, x: p.x, y: p.y };
-      if (p.handleOut) swapped.handleIn = p.handleOut;
-      if (p.handleIn) swapped.handleOut = p.handleIn;
+      // Spread (not a field list) so every other field of the node survives a reversal —
+      // this runs inside ensureWinding, i.e. on every filled contour.
+      const { handleIn, handleOut, ...rest } = p;
+      const swapped: AnchorPoint = { ...rest };
+      if (handleOut) swapped.handleIn = handleOut;
+      if (handleIn) swapped.handleOut = handleIn;
       return swapped;
     });
   return { ...contour, points };

@@ -12,9 +12,11 @@ interface MenuItemProps {
   disabled?: boolean;
   /** Show a ✓ to mark the active option (e.g. the current theme). Omit for plain actions. */
   checked?: boolean;
+  /** The bound keyboard shortcut, shown right-aligned (e.g. "Ctrl Z"). */
+  shortcut?: string;
 }
 
-export function MenuItem({ label, onSelect, disabled = false, checked }: MenuItemProps) {
+export function MenuItem({ label, onSelect, disabled = false, checked, shortcut }: MenuItemProps) {
   const { close } = useMenu();
 
   return (
@@ -22,7 +24,7 @@ export function MenuItem({ label, onSelect, disabled = false, checked }: MenuIte
       type="button"
       role={checked === undefined ? "menuitem" : "menuitemradio"}
       aria-checked={checked}
-      className="menu-item"
+      className={shortcut ? "menu-item menu-item-keyed" : "menu-item"}
       disabled={disabled}
       onClick={() => {
         onSelect();
@@ -32,7 +34,8 @@ export function MenuItem({ label, onSelect, disabled = false, checked }: MenuIte
       {checked !== undefined && (
         <span className="menu-check" aria-hidden="true">{checked ? "✓" : ""}</span>
       )}
-      {label}
+      {shortcut ? <span>{label}</span> : label}
+      {shortcut && <span className="menu-shortcut">{shortcut}</span>}
     </button>
   );
 }

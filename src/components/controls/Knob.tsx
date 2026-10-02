@@ -58,8 +58,14 @@ export function Knob({ value, onChange, label }: KnobProps) {
         tabIndex={0}
         onPointerDown={onPointerDown}
         onKeyDown={(e) => {
-          if (e.key === "ArrowLeft" || e.key === "ArrowDown") onChange((Math.round(value) + 359) % 360);
-          else if (e.key === "ArrowRight" || e.key === "ArrowUp") onChange((Math.round(value) + 1) % 360);
+          // Held arrows auto-repeat: coalesce like a drag (one undo step), as Slider does.
+          if (e.key === "ArrowLeft" || e.key === "ArrowDown") {
+            coalesceNextEdit(gesture);
+            onChange((Math.round(value) + 359) % 360);
+          } else if (e.key === "ArrowRight" || e.key === "ArrowUp") {
+            coalesceNextEdit(gesture);
+            onChange((Math.round(value) + 1) % 360);
+          }
         }}
       >
         <svg viewBox="0 0 100 100" aria-hidden="true">

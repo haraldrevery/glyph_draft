@@ -5,6 +5,7 @@ import { getTool } from "../tools";
 import { NumberInput } from "../../components/controls/NumberInput";
 import { Toggle } from "../../components/controls/Toggle";
 import { CollapseButton } from "../../components/controls/CollapseButton";
+import { usePanelDrag } from "./usePanelDrag";
 
 /**
  * Contextual tool-options panel: the HUD shows the ACTIVE tool's settings (or
@@ -78,14 +79,17 @@ const TOOL_PANELS: Partial<Record<ToolId, ComponentType>> = {
 export function ToolPanel() {
   const activeTool = useEditorStore((s) => s.activeTool);
   const [collapsed, setCollapsed] = useState(false);
+  // Movable like every other floating panel (called before the early return below).
+  const { ref, style, dragProps, resizeProps } = usePanelDrag("tool");
 
   const Body = TOOL_PANELS[activeTool];
   if (!Body) return null; // tools without options show no panel
 
   const label = getTool(activeTool).label;
   return (
-    <div className="panel tool-panel" role="region" aria-label={`${label} options`}>
-      <div className="panel-bar">
+    <div ref={ref} style={style} className="panel tool-panel" role="region" aria-label={`${label} options`}>
+      <div className="panel-resize" {...resizeProps} />
+      <div className="panel-bar panel-drag" {...dragProps}>
         <span className="panel-title">{label}</span>
         <CollapseButton
           collapsed={collapsed}

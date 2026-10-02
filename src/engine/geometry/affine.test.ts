@@ -8,6 +8,7 @@ import {
   IDENTITY,
 } from "./affine";
 import type { AnchorPoint, Contour } from "../../types/geometry";
+import { contourWinding } from "./path";
 
 /** Round a Vec2 for tolerant comparison of trig results. */
 function r(p: { x: number; y: number }) {
@@ -68,5 +69,33 @@ describe("transformSelected", () => {
     const c: Contour = { id: "c", closed: true, points: [anchor("p", 1, 1)] };
     const out = transformSelected([c], new Set(["other"]), translate(5, 5));
     expect(out[0]).toBe(c);
+  });
+});
+
+describe("transformSelected — mirroring keeps a baked contour's winding", () => {
+  const sq = (baked: boolean): Contour => ({
+    id: "c",
+    closed: true,
+    ...(baked ? { baked: true } : {}),
+    // CW in Y-up (the outer-contour convention).
+    points: [[0, 0], [0, 10], [10, 10], [10, 0]].map(([x, y], i) => ({ id: `p${i}`, type: "corner" as const, x: x!, y: y! })),
+  });
+  const all = new Set(["p0", "p1", "p2", "p3"]);
+  const flipH = scaleAbout(-1, 1, { x: 5, y: 5 });
+
+  it("a fully mirrored baked contour comes back CW (its holes keep working on export)", () => {
+    const [out] = transformSelected([sq(true)], all, flipH);
+    expect(contourWinding(out!)).toBe("cw");
+  });
+
+  it("an ordinary path is mirrored as-is (stroked paths keep their start/end)", () => {
+    const [out] = transformSelected([sq(false)], all, flipH);
+    expect(contourWinding(out!)).toBe("ccw");
+    expect(out!.points.map((p) => p.id)).toEqual(["p0", "p1", "p2", "p3"]);
+  });
+
+  it("a non-mirroring transform never reorders", () => {
+    const [out] = transformSelected([sq(true)], all, translate(3, 3));
+    expect(out!.points.map((p) => p.id)).toEqual(["p0", "p1", "p2", "p3"]);
   });
 });

@@ -19,7 +19,7 @@ export type InfoSection = "about" | "licence" | "legal" | "userGuide";
 
 const DOCS: { id: InfoSection; label: string; md: string }[] = [
   { id: "about", label: "About", md: aboutMd },
-  { id: "licence", label: "Licence", md: licenceMd },
+  { id: "licence", label: "License", md: licenceMd },
   { id: "legal", label: "Legal", md: legalMd },
   { id: "userGuide", label: "User guide", md: userGuideMd },
 ];

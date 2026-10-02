@@ -40,8 +40,10 @@ every glyph as `u_xxxx.svg` (or just one) with a universal scale %, an optional 
 mode, and synthetic **bold/italic**. SVG import lands on a new layer.
 
 **Workspace** — dark / light / paper themes with a custom accent, movable and resizable panels, a
-command registry with fully rebindable shortcuts, right-click menus everywhere, per-glyph undo/redo,
-and autosave plus a portable `.glphdrft` project file that moves between web and desktop.
+command registry with fully rebindable shortcuts (listed in the Edit and right-click menus),
+per-glyph undo/redo, and autosave plus a portable `.glphdrft` project file that moves between web
+and desktop — with recovery points (start of session, before the last import) under
+**File → Restore previous version…**.
 
 **Not yet implemented:** dynamic alignment "smart guides", a custom cap designer, procedural/L-system
 brushes, per-*node* corner styles (per-path corners are shipped), and i18n. See CLAUDE.md →
@@ -55,7 +57,7 @@ brushes, per-*node* corner styles (per-path corners are shipped), and i18n. See 
 - **fflate** — in-browser zip for the bulk SVG export
 - **marked** — renders the bundled Markdown in the Information modal
 - **LocalForage** (web) / **Tauri v2 FS plugin** (desktop) behind a single `StorageService` interface — the Tauri adapter is always lazy-loaded so the web bundle never references `@tauri-apps`
-- **Vite** for dev/build; **Vitest** for the pure-engine unit tests (46 files, 433 tests); **Tauri v2** for the desktop shell
+- **Vite** for dev/build; **Vitest** for the pure-engine and glue unit tests (59 files, 707 tests); **Tauri v2** for the desktop shell
 
 > **Paper.js note:** Paper.js is stable but hasn't had a major release since 2022. It sits entirely behind `src/engine/geometry/geometryEngine.ts` — swapping it for another library is a one-line change in that file with no ripple into stores or UI.
 

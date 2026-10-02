@@ -1001,3 +1001,117 @@ describe("dash model (experimental)", () => {
     for (const c of a) expect(contourWinding(c)).toBe("cw");
   });
 });
+
+/**
+ * Terminal cuts must stay LOCAL to their terminal. Rectangle cap A and the angled butt
+ * (terminal cap-angle handle) slice off body material past a plane at the end. They once
+ * subtracted the whole half-plane, which deleted every part of a CURVING stroke lying in
+ * front of its own end — an S kept ~2% of its area. Every other cap test uses a straight
+ * stem, where the bug cannot show, so these use curves.
+ */
+describe("terminal cuts stay local on curved strokes", () => {
+  /** An S as the pen draws it: smooth nodes, so each end carries a dangling handle
+   *  collinear with the tangent (the cap-angle handle). */
+  function sCurve(withDanglingHandles: boolean): Contour {
+    return {
+      id: "S",
+      closed: false,
+      points: [
+        { id: "a", type: "smooth", x: 600, y: 650, handleOut: { x: 500, y: 760 },
+          ...(withDanglingHandles ? { handleIn: { x: 700, y: 540 } } : {}) },
+        { id: "b", type: "smooth", x: 300, y: 550, handleIn: { x: 200, y: 700 }, handleOut: { x: 400, y: 400 } },
+        { id: "c", type: "smooth", x: 650, y: 200, handleIn: { x: 750, y: 300 }, handleOut: { x: 600, y: 0 } },
+        { id: "d", type: "smooth", x: 250, y: 60, handleIn: { x: 350, y: -20 },
+          ...(withDanglingHandles ? { handleOut: { x: 150, y: 140 } } : {}) },
+      ],
+    };
+  }
+  const cCurve: Contour = {
+    id: "C",
+    closed: false,
+    points: [
+      { id: "a", type: "smooth", x: 700, y: 600, handleOut: { x: 600, y: 750 } },
+      { id: "b", type: "smooth", x: 250, y: 350, handleIn: { x: 250, y: 650 }, handleOut: { x: 250, y: 50 } },
+      { id: "c", type: "smooth", x: 700, y: 100, handleIn: { x: 600, y: -50 } },
+    ],
+  };
+  const area = (cs: Contour[]) => cs.reduce((s, c) => s + Math.abs(ringSignedArea(flattenContour(c))), 0);
+  const W: StrokeStyle = { width: 50, startCap: "butt", endCap: "butt", join: "round" };
+  const butt = (c: Contour) => area(g.expandStroke(c, W));
+
+  it("rectangle cap A keeps the whole body of an S and a C", () => {
+    for (const c of [sCurve(false), cCurve]) {
+      const rect = area(g.expandStroke({ ...c }, { ...W, startCap: "rectangle", endCap: "rectangle" }));
+      expect(rect).toBeGreaterThan(0.97 * butt({ ...c }));
+    }
+  });
+
+  it("an angled rectangle cap (outward anchor) keeps the body too", () => {
+    const rect = area(
+      g.expandStroke(sCurve(false), {
+        ...W,
+        startCap: "rectangle",
+        endCap: "rectangle",
+        startRect: { size: 30, ratio: 1.4, angle: 20 },
+        endRect: { size: 30, ratio: 1.4, angle: -30, anchor: "outward" },
+      }),
+    );
+    expect(rect).toBeGreaterThan(0.97 * butt(sCurve(false)));
+  });
+
+  it("a pen-drawn S (dangling terminal handles) with butt caps keeps its whole body", () => {
+    const plain = butt(sCurve(false));
+    const handled = area(g.expandStroke(sCurve(true), W));
+    // Collinear handles = the same flat cut as the plain butt, so the areas agree.
+    expect(Math.abs(handled - plain) / plain).toBeLessThan(0.01);
+  });
+
+  it("an OFF-tangent cap-angle handle slants the end but never removes the stem", () => {
+    // A handle nearly perpendicular to the path makes the cut plane run almost ALONG the
+    // stem, so the whole stroke is one piece "attached" at the terminal — the cut must
+    // still stay within reach of the end.
+    const withHandle = (c: Contour): Contour => {
+      const pts = c.points.map((p) => ({ ...p }));
+      const last = pts[pts.length - 1]!;
+      pts[pts.length - 1] = { ...last, handleOut: { x: last.x + 30, y: last.y + 50 } };
+      return { ...c, points: pts };
+    };
+    const L = open("L", [[200, 700], [200, 0], [600, 0]]);
+    for (const c of [sCurve(false), L]) {
+      expect(area(g.expandStroke(withHandle(c), W))).toBeGreaterThan(0.9 * butt(c));
+    }
+  });
+
+  it("the brush model with a rectangle cap keeps the whole body", () => {
+    const brush = { ...W, model: "brush" as const };
+    const plain = area(g.expandStroke(sCurve(false), brush));
+    const rect = area(g.expandStroke(sCurve(false), { ...brush, startCap: "rectangle" }));
+    expect(rect).toBeGreaterThan(0.97 * plain);
+  });
+});
+
+describe("miter join", () => {
+  it("fills the outer corner of an L as one solid (no detached triangle, no gap)", () => {
+    const L = open("L", [[200, 700], [200, 0], [600, 0]]);
+    const out = g.expandStroke(L, { width: 50, startCap: "butt", endCap: "butt", join: "miter" });
+    expect(out).toHaveLength(1);
+    // Exact area of the mitred L: two 50-wide arms + the square outer corner = 55 000;
+    // the sampled ribbon chords curves, but an L is straight, so allow only float noise.
+    expect(Math.abs(Math.abs(ringSignedArea(flattenContour(out[0]!))) - 55000)).toBeLessThan(15);
+  });
+});
+
+describe("halftone pitch cap (open paths)", () => {
+  it("a long DIAGONAL stroke keeps its dots — the cap sizes the band, not the bounding box", () => {
+    // Same length and settings; only the direction differs. The bounding box of the
+    // diagonal is ~150× bigger, which used to inflate the pitch until no dot survived.
+    const style: StrokeStyle = {
+      width: 20, startCap: "butt", endCap: "butt", join: "round", model: "halftone",
+      halftone: { cell: 1, size: 1, angle: 45, shape: "circle" },
+    };
+    const horizontal = g.expandStroke(open("h", [[0, 0], [3000, 0]]), style).length;
+    const diagonal = g.expandStroke(open("d", [[0, 0], [2121, 2121]]), style).length;
+    expect(horizontal).toBeGreaterThan(100);
+    expect(diagonal).toBeGreaterThan(horizontal * 0.5);
+  });
+});

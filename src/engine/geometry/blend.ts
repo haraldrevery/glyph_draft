@@ -62,14 +62,30 @@ function sameTopology(a: Contour[], b: Contour[]): boolean {
 function carryStyle(out: Contour, ca: Contour, cb: Contour, t: number): Contour {
   const stroke = ca.stroke ?? cb.stroke;
   if (stroke) {
-    out.stroke =
-      ca.stroke && cb.stroke
-        ? { ...stroke, width: lerp(ca.stroke.width, cb.stroke.width, t) }
-        : stroke;
+    if (ca.stroke && cb.stroke) {
+      // Shape params from the first-found stroke (as before), width morphed — but the
+      // OUTLINE COLOUR (the stroke's own `color`/`gradient`, projectFile v7) from A, so
+      // "colour from A" holds for outlines too, not just fills.
+      const { color: _c, gradient: _g, ...shape } = stroke;
+      out.stroke = {
+        ...shape,
+        width: lerp(ca.stroke.width, cb.stroke.width, t),
+        ...(cb.stroke.color !== undefined ? { color: cb.stroke.color } : {}),
+        ...(cb.stroke.gradient !== undefined ? { gradient: cb.stroke.gradient } : {}),
+      };
+    } else {
+      out.stroke = stroke;
+    }
   }
   if (cb.paint) out.paint = cb.paint; // operand A's colour
+  // Interior on/off rides with the paint (A's), else B's; undefined keeps the legacy rule.
+  const filled = cb.filled ?? ca.filled;
+  if (filled !== undefined) out.filled = filled;
   const corner = ca.corner ?? cb.corner;
   if (corner) out.corner = corner;
+  // A baked side (imported / merged art) is final geometry whose winding carries its
+  // holes; the in-betweens must render verbatim too, or every counter fills in.
+  if (ca.baked || cb.baked) out.baked = true;
   return out;
 }
 

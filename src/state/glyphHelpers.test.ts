@@ -85,11 +85,13 @@ describe("cloneLayer", () => {
     ...over,
   });
 
-  // Regression: renderContours returns a BAKED layer's contours verbatim (Invariant 4's
-  // exception). Dropping the flag force-CWs them, filling in the holes of a duplicated
-  // SVG import / merged layer / expanded stroke.
-  it("carries the baked flag", () => {
-    expect(cloneLayer(baked({ baked: true })).baked).toBe(true);
+  // Regression: renderContours emits a BAKED contour verbatim (Invariant 4's exception).
+  // Dropping the flag force-CWs it, filling in the holes of a duplicated SVG import /
+  // merged layer / expanded stroke. The flag is per contour (projectFile v9).
+  it("carries each contour's baked flag", () => {
+    const src = baked();
+    const contours = src.contours.map((c) => ({ ...c, baked: true }));
+    expect(cloneLayer({ ...src, contours }).contours[0]!.baked).toBe(true);
   });
 
   // Regression guard for the field-by-field rebuild: a duplicated layer that silently
@@ -103,12 +105,12 @@ describe("cloneLayer", () => {
     expect(cloneLayer(baked()).groupId).toBeUndefined();
   });
 
-  it("leaves baked unset on an ordinary layer", () => {
-    expect(cloneLayer(baked()).baked).toBeUndefined();
+  it("leaves baked unset on an ordinary layer's contours", () => {
+    expect(cloneLayer(baked()).contours[0]!.baked).toBeUndefined();
   });
 
   it("assigns fresh ids and unlocks the copy", () => {
-    const src = baked({ locked: true, baked: true });
+    const src = baked({ locked: true });
     const clone = cloneLayer(src);
     expect(clone.id).not.toBe("l1");
     expect(clone.locked).toBe(false);

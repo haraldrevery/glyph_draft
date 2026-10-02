@@ -98,12 +98,12 @@ export function ViewMenu() {
         <span className="control-group-title">Reference</span>
         <Toggle label="Onion skin" checked={onionEnabled} onChange={toggleOnion} />
         <Toggle
-          label="Ghost: rendered output"
+          label="Onion skin: rendered output"
           checked={onionRenderSvg}
           onChange={toggleOnionRenderSvg}
         />
         <Slider
-          label={`Ghost opacity · ${Math.round(onionOpacity * 100)}%`}
+          label={`Onion skin opacity · ${Math.round(onionOpacity * 100)}%`}
           value={Math.round(onionOpacity * 100)}
           min={5}
           max={80}

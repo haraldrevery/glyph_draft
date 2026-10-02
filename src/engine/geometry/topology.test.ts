@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { extractContours, reverseContour, joinContours, splitContourAt, splitContourAtPoints } from "./topology";
+import {
+  closeEnds,
+  extractContours,
+  reverseContour,
+  joinContours,
+  splitContourAt,
+  splitContourAtPoints,
+} from "./topology";
 import type { AnchorPoint, Contour, StrokeStyle } from "../../types/geometry";
 
 /**
@@ -213,5 +220,96 @@ describe("splitContourAtPoints (multi-cut — knife/eraser)", () => {
     const c = open(["a", "b", "c"]);
     expect(splitContourAtPoints(c, [])).toEqual([c]);
     expect(splitContourAtPoints(c, [{ segIndex: 0, t: 0 }])).toEqual([c]); // snaps to the start terminal
+  });
+});
+
+describe("pieces keep their path's style", () => {
+  const styled = (): Contour => ({
+    ...open(["a", "b", "c", "d"]),
+    closed: true,
+    stroke: STROKE,
+    paint: { fill: "#ff0000" },
+    filled: true,
+    corner: { type: "round", radius: 12 },
+  });
+  const style = (c: Contour) => [c.paint?.fill, c.filled, c.corner?.type, !!c.stroke];
+
+  it("extractContours (delete-split, Cut) keeps paint, fill and corners", () => {
+    for (const f of extractContours(styled(), new Set(["a", "b", "c"]))) {
+      expect(style(f)).toEqual(["#ff0000", true, "round", true]);
+    }
+  });
+
+  it("splitContourAtPoints (scissors / knife / eraser) keeps fill and corners", () => {
+    for (const f of splitContourAtPoints(styled(), [{ segIndex: 0, t: 0.5 }])) {
+      expect(style(f)).toEqual(["#ff0000", true, "round", true]);
+    }
+  });
+
+  it("drops the dangling handle on a NEW cut end (it would act as a cap-angle handle)", () => {
+    const smooth = (id: string, x: number): AnchorPoint => ({
+      id, type: "smooth", x, y: 0, handleIn: { x: x - 3, y: 0 }, handleOut: { x: x + 3, y: 0 },
+    });
+    const c: Contour = { id: "c", closed: false, points: [smooth("a", 0), smooth("b", 10), smooth("c", 20), smooth("d", 30)] };
+    const [left, right] = extractContours(c, new Set(["a", "b", "d"])); // "c" deleted, split
+    expect(left!.points[0]!.handleIn).toBeDefined(); // original terminal keeps its handle
+    expect(left!.points[1]!.handleOut).toBeUndefined(); // new end: pointed at removed "c"
+    expect(right).toBeUndefined(); // "d" alone is too short to survive
+  });
+});
+
+describe("joinContours — fusing keeps the curves and the caps", () => {
+  it("b's first curve keeps its shape: the junction takes b's outgoing handle (as an offset)", () => {
+    const a: Contour = { id: "A", closed: false, points: [pt("a0", 0, 0), pt("a1", 100, 0)] };
+    const b: Contour = {
+      id: "B",
+      closed: false,
+      // b's first node sits ELSEWHERE (a drag-merge hands in the pre-drag contour); its
+      // handle must be carried relative to the node, not as an absolute position.
+      points: [{ ...pt("b0", 500, 500), handleOut: { x: 550, y: 580 } }, { ...pt("b1", 200, 0), handleIn: { x: 200, y: 80 } }],
+    };
+    const j = joinContours(a, b, false, true);
+    expect(j.points.map((p) => p.id)).toEqual(["a0", "a1", "b1"]);
+    expect(j.points[1]!.handleOut).toEqual({ x: 150, y: 80 }); // 100,0 + (50,80)
+  });
+
+  it("each end keeps the cap of the geometric end it is, even when a is reversed", () => {
+    const a: Contour = { ...open(["a0", "a1"]), id: "A", stroke: { ...STROKE, startCap: "serif", endCap: "round" } };
+    const b: Contour = {
+      id: "B",
+      closed: false,
+      points: [pt("b0", 0, 0), pt("b1", -10, 0)],
+      stroke: { ...STROKE, startCap: "butt", endCap: "drop" },
+    };
+    // Join a's START (its serif end) to b's start: the serif end is consumed, so the
+    // joined start is a's far end (round) and the joined end is b's far end (drop).
+    const j = joinContours(a, b, true, true);
+    expect(j.stroke!.startCap).toBe("round"); // was "serif" — the consumed end's cap
+    expect(j.stroke!.endCap).toBe("drop");
+  });
+
+  it("without fuse, two ends that are apart are connected (no node is dropped)", () => {
+    const a: Contour = { id: "A", closed: false, points: [pt("a0", 0, 0), pt("a1", 10, 0)] };
+    const b: Contour = { id: "B", closed: false, points: [pt("b0", 50, 0), pt("b1", 60, 0)] };
+    expect(joinContours(a, b, false, true, false).points.map((p) => p.id)).toEqual(["a0", "a1", "b0", "b1"]);
+  });
+});
+
+describe("closeEnds", () => {
+  const c: Contour = {
+    id: "c",
+    closed: false,
+    points: [pt("p0", 0, 0), pt("p1", 100, 0), { ...pt("p2", 0, 1), handleIn: { x: 40, y: 60 } }],
+  };
+
+  it("with dropAt, fuses the end into the start: no duplicate node, the last curve kept", () => {
+    const closed = closeEnds(c, "end");
+    expect(closed.closed).toBe(true);
+    expect(closed.points.map((p) => p.id)).toEqual(["p0", "p1"]);
+    expect(closed.points[0]!.handleIn).toEqual({ x: 40, y: 59 }); // offset (40,59) from p2
+  });
+
+  it("without dropAt, adds a closing segment (both nodes kept)", () => {
+    expect(closeEnds(c).points.map((p) => p.id)).toEqual(["p0", "p1", "p2"]);
   });
 });

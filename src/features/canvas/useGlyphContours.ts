@@ -19,9 +19,6 @@ import { resolvedLayers } from "../layers/layerTree";
 export interface RenderLayer {
   id: string;
   contours: Contour[];
-  /** Final baked geometry (merged layer); see Layer.baked. Carried so buildFillGroups
-   *  renders it verbatim. */
-  baked?: boolean;
   /** Per-layer editing color (auto palette by stack position); see layerColors. */
   color: string;
 }

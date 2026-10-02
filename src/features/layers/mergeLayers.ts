@@ -3,6 +3,7 @@ import { useViewportStore } from "../../state/viewportStore";
 import { bakeContours, type FillLayer } from "../canvas/layerFills";
 import { getGeometryService } from "../../engine/geometry/geometryEngine";
 import { createId } from "../../utils/id";
+import { markBaked } from "../../state/glyphHelpers";
 import type { Layer } from "../../types/document";
 import { resolvedLayers } from "./layerTree";
 
@@ -10,8 +11,8 @@ import { resolvedLayers } from "./layerTree";
  * Destructive "Merge layers": bake the given layers' RENDERED geometry into one
  * new layer. This reuses `buildFillGroups` (the same pipeline the canvas/export
  * use), so strokes are expanded and any boolean pair fully within the set is
- * applied — then the result is frozen into a single `baked: true` layer (rendered
- * verbatim, winding preserved). The source layers and their pairs are removed.
+ * applied — then the result is frozen into one layer of BAKED contours (rendered
+ * verbatim, winding preserved — see `Contour.baked`). The source layers and their pairs are removed.
  *
  * Geometry (Paper.js) is computed HERE, not in the store, so the document store
  * stays free of the geometry engine; the store only does the array surgery
@@ -30,11 +31,7 @@ export function mergeLayers(layerIds: string[]): void {
   if (targets.length < 2) return;
 
   const targetIds = new Set(targets.map((l) => l.id));
-  const fillLayers: FillLayer[] = targets.map((l) => ({
-    id: l.id,
-    contours: l.contours,
-    ...(l.baked ? { baked: true } : {}),
-  }));
+  const fillLayers: FillLayer[] = targets.map((l) => ({ id: l.id, contours: l.contours }));
   // Only the pairs fully contained in the merge set apply to the bake.
   const pairs = (glyph.booleanPairs ?? []).filter(
     (p) => targetIds.has(p.layerIds[0]) && targetIds.has(p.layerIds[1]),
@@ -51,8 +48,7 @@ export function mergeLayers(layerIds: string[]): void {
     name: `${targets[0]!.name} merged`,
     visible: true,
     locked: false,
-    contours,
-    baked: true,
+    contours: markBaked(contours),
   };
 
   doc.commitMerge([...targetIds], merged);

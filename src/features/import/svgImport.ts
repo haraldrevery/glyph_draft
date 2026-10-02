@@ -24,8 +24,11 @@ import { createId } from "../../utils/id";
  * - SVG is Y-down, our world is Y-up, so a final Y-flip is folded in — which means an SVG
  *   we exported (`glyphToSvg`, whose `scale(1,-1)` wrapper this flatten undoes) round-trips
  *   to the same coordinates.
- * - `fill` / `fill-opacity` (attribute, `style`, or inherited) map to `Contour.paint`
- *   (default black = no paint). Winding is normalized by `correctWinding`, so counters
+ * - `fill` / `fill-opacity` / `opacity` map to `Contour.paint` (default black = no paint),
+ *   resolved with CSS precedence: `style=""`, then embedded `<style>` rules (simple
+ *   selectors — `parseStyleSheet`), then presentation attributes; inherited down `<g>`s.
+ *   Stroke-only shapes (`fill="none"` + a stroke) still import as unfilled outlines —
+ *   strokes are not converted. Winding is normalized by `correctWinding`, so counters
  *   punch through under the renderer's nonzero fill (the layer is imported as `baked`).
  */
 
@@ -37,16 +40,125 @@ const num = (v: string | null | undefined, fallback = 0): number => {
   return Number.isFinite(n) ? n : fallback;
 };
 
-/** A presentation attribute, falling back to the same property in a `style=""` string. */
-function attrOrStyle(el: Element, name: string): string | null {
-  const a = el.getAttribute(name);
-  if (a != null) return a;
-  const style = el.getAttribute("style");
-  if (style) {
-    const m = new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([^;]+)`).exec(style);
-    if (m && m[1]) return m[1].trim();
+/** One rule of an embedded `<style>` sheet, reduced to what the importer can apply. */
+export interface CssRule {
+  tag: string | null;
+  id: string | null;
+  classes: string[];
+  /** id·100 + class·10 + tag·1 — compared first; `order` breaks ties (later wins). */
+  specificity: number;
+  order: number;
+  decls: Record<string, string>;
+}
+
+/**
+ * Parse the rules of an embedded `<style>` sheet. Only COMPOUND SIMPLE selectors are
+ * kept (`.cls-1`, `path`, `rect.a.b`, `#logo`, and lists of them) — exactly what design
+ * tools emit (Illustrator's default SVG export puts every colour in `.cls-N` rules,
+ * which the importer used to ignore, turning everything black). Anything it can't
+ * evaluate here (descendant/child combinators, pseudo-classes, `@media`) is skipped
+ * rather than guessed. Pure: no DOM.
+ */
+export function parseStyleSheet(css: string): CssRule[] {
+  const rules: CssRule[] = [];
+  const text = stripAtRules(css.replace(/\/\*[\s\S]*?\*\//g, ""));
+  const block = /([^{}]+)\{([^{}]*)\}/g;
+  let m: RegExpExecArray | null;
+  let order = 0;
+  while ((m = block.exec(text))) {
+    const decls: Record<string, string> = {};
+    for (const d of m[2]!.split(";")) {
+      const i = d.indexOf(":");
+      if (i < 0) continue;
+      const prop = d.slice(0, i).trim().toLowerCase();
+      const value = d.slice(i + 1).replace(/!important/i, "").trim();
+      if (prop && value) decls[prop] = value;
+    }
+    for (const raw of m[1]!.split(",")) {
+      const sel = raw.trim();
+      const parts = /^([a-zA-Z][\w-]*)?(#[\w-]+)?((?:\.[\w-]+)*)$/.exec(sel);
+      if (!sel || sel.startsWith("@") || !parts) continue;
+      const tag = parts[1] ?? null;
+      const id = parts[2] ? parts[2].slice(1) : null;
+      const classes = parts[3] ? parts[3].split(".").filter(Boolean) : [];
+      if (!tag && !id && classes.length === 0) continue;
+      const specificity = (id ? 100 : 0) + classes.length * 10 + (tag ? 1 : 0);
+      rules.push({ tag, id, classes, specificity, order: order++, decls });
+    }
   }
-  return null;
+  return rules;
+}
+
+/** Drop every top-level @-rule (`@media … { … }`, `@import …;`) with its nested block —
+ *  conditional styles can't be evaluated for an import, so they must not leak in. */
+function stripAtRules(css: string): string {
+  let out = "";
+  let i = 0;
+  while (i < css.length) {
+    if (css[i] !== "@") {
+      out += css[i];
+      i += 1;
+      continue;
+    }
+    let depth = 0;
+    for (; i < css.length; i += 1) {
+      const ch = css[i];
+      if (ch === ";" && depth === 0) break;
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) break;
+      }
+    }
+    i += 1; // past the closing `}` / `;`
+  }
+  return out;
+}
+
+/** What the cascade needs to know about one element (decoupled from the DOM for tests). */
+export interface StyleTarget {
+  tag: string;
+  id: string | null;
+  classes: string[];
+  attr: (name: string) => string | null;
+  inlineStyle: string | null;
+}
+
+/**
+ * The element's OWN declared value for a property, by CSS precedence: the `style=""`
+ * attribute, then the most specific matching sheet rule (later wins a tie), then the
+ * presentation attribute (`fill="…"`). Presentation attributes are the WEAKEST source —
+ * the importer used to check them first, so `fill="red" style="fill:blue"` (blue in
+ * every browser) imported red. Returns null when the element doesn't set it (inherit).
+ */
+export function cascadeProp(name: string, el: StyleTarget, rules: CssRule[]): string | null {
+  if (el.inlineStyle) {
+    const m = new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([^;]+)`).exec(el.inlineStyle);
+    if (m && m[1]) return m[1].replace(/!important/i, "").trim();
+  }
+  let best: CssRule | null = null;
+  for (const r of rules) {
+    if (!(name in r.decls)) continue;
+    if (r.tag && r.tag !== el.tag) continue;
+    if (r.id && r.id !== el.id) continue;
+    if (!r.classes.every((c) => el.classes.includes(c))) continue;
+    if (!best || r.specificity > best.specificity || (r.specificity === best.specificity && r.order > best.order)) best = r;
+  }
+  if (best) return best.decls[name]!;
+  return el.attr(name);
+}
+
+/**
+ * An opacity value (`0.5` or `50%`) clamped to [0, 1], or null when it isn't a usable
+ * number — `inherit`, a typo — so the caller falls back to the inherited value. (It used
+ * to become 0 through `parseFloat(…) || 0`, which made the shape invisible.)
+ */
+export function parseOpacity(v: string | null): number | null {
+  if (v == null) return null;
+  const t = v.trim();
+  const n = parseFloat(t);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(1, Math.max(0, t.endsWith("%") ? n / 100 : n));
 }
 
 /** Parse an SVG `transform` list into one matrix (composed left-to-right). */
@@ -186,18 +298,38 @@ export function importSvg(svgText: string): Contour[] {
 
   const contours: Contour[] = [];
 
-  const walk = (el: Element, ctm: Matrix, fill: string | undefined, opacity: number) => {
+  // Embedded <style> sheets (Illustrator / Figma exports keep colours in class rules).
+  const rules = parseStyleSheet(
+    Array.from(doc.getElementsByTagName("style"))
+      .map((s) => s.textContent ?? "")
+      .join("\n"),
+  );
+  const target = (el: Element): StyleTarget => ({
+    tag: el.localName,
+    id: el.getAttribute("id"),
+    classes: (el.getAttribute("class") ?? "").split(/\s+/).filter(Boolean),
+    attr: (n) => el.getAttribute(n),
+    inlineStyle: el.getAttribute("style"),
+  });
+
+  // `fill` and `fill-opacity` INHERIT; `opacity` doesn't, but a group's opacity fades
+  // everything inside it, so it is carried down as a running product (an approximation of
+  // group compositing that is exact for non-overlapping children).
+  const walk = (el: Element, ctm: Matrix, fill: string | undefined, fillOpacity: number, groupOpacity: number) => {
     if (SKIP.has(el.localName)) return;
     const ctm2 = multiply(ctm, parseTransform(el.getAttribute("transform")));
-    const f = attrOrStyle(el, "fill");
-    const o = attrOrStyle(el, "fill-opacity");
+    const t = target(el);
+    const f = cascadeProp("fill", t, rules);
+    const fo = cascadeProp("fill-opacity", t, rules);
+    const o = cascadeProp("opacity", t, rules);
     const fill2 = f != null && f.trim().toLowerCase() !== "inherit" ? f : fill;
-    const opacity2 = o != null ? Math.min(1, Math.max(0, parseFloat(o) || 0)) : opacity;
+    const fillOpacity2 = parseOpacity(fo) ?? fillOpacity;
+    const groupOpacity2 = groupOpacity * (parseOpacity(o) ?? 1);
 
     const subs = shapeSubpaths(el);
     if (subs.length > 0) {
       const m = multiply(FLIP_Y, ctm2);
-      const paint = toPaint(fill2, opacity2);
+      const paint = toPaint(fill2, fillOpacity2 * groupOpacity2);
       for (const sub of subs) {
         if (sub.points.length < 2) continue;
         const c: Contour = {
@@ -211,11 +343,11 @@ export function importSvg(svgText: string): Contour[] {
     }
 
     if (CONTAINERS.has(el.localName)) {
-      for (const child of Array.from(el.children)) walk(child, ctm2, fill2, opacity2);
+      for (const child of Array.from(el.children)) walk(child, ctm2, fill2, fillOpacity2, groupOpacity2);
     }
   };
 
-  walk(root, IDENTITY, undefined, 1);
+  walk(root, IDENTITY, undefined, 1, 1);
   // Normalize winding so nested counters punch through under nonzero fill (baked layer).
   return correctWinding(contours);
 }

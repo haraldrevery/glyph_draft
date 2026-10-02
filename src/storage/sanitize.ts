@@ -68,7 +68,8 @@ function sanitizeContour(c: unknown): Contour | null {
   const badCorner =
     c.corner !== undefined && !(isRec(c.corner) && typeof c.corner.type === "string" && fin(c.corner.radius));
   const badFilled = c.filled !== undefined && typeof c.filled !== "boolean";
-  if (points === c.points && !badClosed && !badStroke && !badPaint && !badCorner && !badFilled) {
+  const badBaked = c.baked !== undefined && typeof c.baked !== "boolean";
+  if (points === c.points && !badClosed && !badStroke && !badPaint && !badCorner && !badFilled && !badBaked) {
     return c as unknown as Contour;
   }
   const q: Rec = { ...c, points };
@@ -77,6 +78,7 @@ function sanitizeContour(c: unknown): Contour | null {
   if (badPaint) delete q.paint;
   if (badCorner) delete q.corner;
   if (badFilled) delete q.filled;
+  if (badBaked) delete q.baked;
   return q as unknown as Contour;
 }
 
@@ -86,6 +88,8 @@ function sanitizeLayer(l: unknown, i: number): Layer | null {
   const badName = typeof l.name !== "string";
   const badVisible = typeof l.visible !== "boolean";
   const badLocked = typeof l.locked !== "boolean";
+  // A legacy (≤ v8) layer-level `baked`: a malformed one is dropped here; a valid one is
+  // lifted onto the layer's contours afterwards by projectFile's `liftLayerBaked`.
   const badBaked = l.baked !== undefined && typeof l.baked !== "boolean";
   const badGroup = l.groupId !== undefined && typeof l.groupId !== "string";
   if (contours === l.contours && !badName && !badVisible && !badLocked && !badBaked && !badGroup) {

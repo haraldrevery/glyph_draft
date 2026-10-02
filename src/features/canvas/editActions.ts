@@ -15,6 +15,7 @@ import { withCorners } from "../../engine/geometry/corners";
 import type { Contour } from "../../types/geometry";
 import type { Glyph } from "../../types/document";
 import { resolvedLayers } from "../layers/layerTree";
+import { renderContour } from "./layerFills";
 
 /**
  * Selection-level edit actions (nudge / flip / reverse) as plain, React-free
@@ -216,14 +217,19 @@ export function selectedContours(): Contour[] {
 }
 
 /** Enabled when at least one selected path carries a non-destructive stroke. */
+/** A path whose stroke actually renders. (A baked contour renders verbatim — any stroke
+ *  on it is inert, so there is nothing to expand.) */
+const hasLiveStroke = (c: Contour): boolean => c.stroke != null && !c.baked;
+
 export function canExpandStrokes(): boolean {
-  return selectedContours().some((c) => c.stroke != null);
+  return selectedContours().some(hasLiveStroke);
 }
 
-/** Expand every selected stroked path into its filled outline — the SAME geometry
- *  `buildFillGroups` renders — and drop the result on one new `baked` layer, consuming
- *  the originals (their centerline + `stroke`). Paths without a stroke are left alone.
- *  One undo step. */
+/** Expand every selected stroked path into what it renders — `renderContour`, the SAME
+ *  definition the canvas and export use: its stroke outline in the stroke's own colour,
+ *  plus its interior when the path is also filled — and drop the result, baked, on one
+ *  new layer, consuming the originals (their centerline + `stroke`). Paths without a
+ *  stroke are left alone. One undo step. */
 export function expandSelectedStrokes(): void {
   const glyph = activeGlyph();
   if (!glyph) return;
@@ -234,14 +240,10 @@ export function expandSelectedStrokes(): void {
     const layer = resolvedLayers(glyph).find((l) => l.id === r.layerId);
     if (!layer || layer.locked) continue;
     const raw = layer.contours.find((ct) => ct.id === r.contourId);
-    if (!raw || !raw.stroke) continue;
-    // Round the path's corners FIRST, exactly like renderContours — otherwise a
-    // corner-styled path bakes sharp while the canvas shows it filleted.
-    const c = withCorners(raw);
-    // Carry the path's paint onto each outline piece, exactly like renderContours.
-    for (const o of geom.expandStroke(c, raw.stroke)) {
-      expanded.push(c.paint ? { ...o, paint: c.paint } : o);
-    }
+    if (!raw || !hasLiveStroke(raw)) continue;
+    // Exactly what the canvas draws for this path (corners rounded first, outline in the
+    // stroke colour, interior kept if filled) — not a re-derivation that could drift.
+    expanded.push(...renderContour(raw, geom));
     removeRefs.push({ layerId: r.layerId, contourId: r.contourId });
   }
   if (expanded.length === 0) return;

@@ -107,7 +107,7 @@ describe("baking keeps a boolean pair's colour", () => {
     });
     mergeLayers(["a", "b"]);
     const merged = g().layers[0]!;
-    expect(merged.baked).toBe(true);
+    expect(merged.contours.every((c) => c.baked)).toBe(true);
     expect(merged.contours.every((c) => c.paint?.fill === "#ff0000")).toBe(true);
   });
 

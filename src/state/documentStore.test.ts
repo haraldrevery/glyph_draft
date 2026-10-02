@@ -238,6 +238,34 @@ describe("joinEndpoints", () => {
     expect(ls["LB"]!.contours[0]!.points).toHaveLength(3); // 2 + 2 − 1 coincident
   });
 
+  it("Merge nodes on ends that are APART connects them — no node is dropped", () => {
+    const a: Contour = { ...poly("a", [[0, 0], [10, 0]]), closed: false };
+    const b: Contour = { ...poly("b", [[50, 0], [60, 0]]), closed: false };
+    seedTwoLayers(layer("LA", [a, b]), layer("LB", [INNER]), "LA");
+    state().joinEndpoints(
+      { layerId: "LA", contourId: "a", pointId: "a_p1" },
+      { layerId: "LA", contourId: "b", pointId: "b_p0" },
+    );
+    const contours = layersById()["LA"]!.contours;
+    expect(contours).toHaveLength(1);
+    // All four nodes survive, joined b → a through the two chosen ends (it used to
+    // drop b's first node, deleting geometry).
+    expect(contours[0]!.points.map((p) => p.id)).toEqual(["b_p1", "b_p0", "a_p1", "a_p0"]);
+  });
+
+  it("drag-merge of a path's end onto its own start absorbs the dragged node (no seam duplicate)", () => {
+    const c: Contour = { ...poly("c", [[0, 0], [10, 0], [10, 10]]), closed: false };
+    seedTwoLayers(layer("LA", [c]), layer("LB", [INNER]), "LA");
+    state().joinEndpoints(
+      { layerId: "LA", contourId: "c", pointId: "c_p2" }, // dragged
+      { layerId: "LA", contourId: "c", pointId: "c_p0" }, // dropped onto
+      "merge",
+    );
+    const out = layersById()["LA"]!.contours[0]!;
+    expect(out.closed).toBe(true);
+    expect(out.points.map((p) => p.id)).toEqual(["c_p0", "c_p1"]);
+  });
+
   it("refuses to merge from a locked layer", () => {
     const a: Contour = { ...poly("a", [[0, 0], [10, 0]]), closed: false };
     const b: Contour = { ...poly("b", [[10, 0], [20, 0]]), closed: false };
@@ -349,6 +377,34 @@ describe("setContourPaint", () => {
     state().setContourPaint(["outer", "inner"], { fill: "#00ff00" });
     expect(layersById()["LA"]!.contours[0]!.paint).toBeUndefined(); // locked untouched
     expect(layersById()["LB"]!.contours[0]!.paint).toEqual({ fill: "#00ff00" });
+  });
+});
+
+describe("patchContourPaint", () => {
+  it("patches each path's OWN paint: Opacity over a red and a blue path keeps both colours", () => {
+    seedTwoLayers(
+      layer("LA", [{ ...OUTER, paint: { fill: "#ff0000" } }]),
+      layer("LB", [{ ...INNER, paint: { fill: "#0000ff" } }]),
+    );
+    state().patchContourPaint(["outer", "inner"], { opacity: 0.5 });
+    expect(layersById()["LA"]!.contours[0]!.paint).toEqual({ fill: "#ff0000", opacity: 0.5 });
+    expect(layersById()["LB"]!.contours[0]!.paint).toEqual({ fill: "#0000ff", opacity: 0.5 });
+  });
+
+  it("a fill edit never recolours a legacy outline (its colour is pinned onto the stroke)", () => {
+    const stroke = { width: 10, startCap: "butt" as const, endCap: "butt" as const, join: "miter" as const };
+    seedTwoLayers(layer("LA", [{ ...OUTER, stroke, paint: { fill: "#ff0000" }, filled: true }]), layer("LB", [INNER]));
+    state().patchContourPaint(["outer"], { fill: "#00ff00" });
+    const c = layersById()["LA"]!.contours[0]!;
+    expect(c.paint).toEqual({ fill: "#00ff00" }); // the interior changed
+    expect(c.stroke!.color).toBe("#ff0000"); // the outline kept its red
+  });
+
+  it("is one undo step", () => {
+    seedTwoLayers(layer("LA", [OUTER]), layer("LB", [INNER]));
+    const before = useHistoryStore.getState().pastStates.length;
+    state().patchContourPaint(["outer", "inner"], { fill: "#123456" });
+    expect(useHistoryStore.getState().pastStates.length).toBe(before + 1);
   });
 });
 
@@ -473,8 +529,7 @@ describe("commitMerge", () => {
     name: "Merged",
     visible: true,
     locked: false,
-    contours: [OUTER],
-    baked: true,
+    contours: [{ ...OUTER, baked: true }],
   };
 
   it("replaces the merged layers with one baked layer and prunes their pairs", () => {
@@ -484,7 +539,7 @@ describe("commitMerge", () => {
 
     const ls = state().glyphs["G"]!.layers;
     expect(ls.map((l) => l.id)).toEqual(["M"]);
-    expect(ls[0]!.baked).toBe(true);
+    expect(ls[0]!.contours.every((c) => c.baked)).toBe(true);
     expect(state().glyphs["G"]!.booleanPairs).toEqual([]);
     expect(state().activeLayerId).toBe("M");
     expect(state().selectedLayerIds).toEqual(["M"]);

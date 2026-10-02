@@ -6,8 +6,9 @@ import {
   applyImportedProject,
   parseProject,
   replaceWorkspace,
+  listRecoveryPoints,
 } from "./projectActions";
-import { PREIMPORT_KEY } from "../../storage/projectFile";
+import { PREIMPORT_KEY, SESSION_KEY, SESSION_PREV_KEY, serializeProject } from "../../storage/projectFile";
 import type { Glyph } from "../../types/document";
 
 const kv = vi.hoisted(() => {
@@ -103,5 +104,28 @@ describe("projectActions", () => {
     expect(Object.keys(state().glyphs)).toEqual(["z"]);
     const snap = kv.data.get(PREIMPORT_KEY) as { glyphs: Record<string, Glyph> };
     expect(Object.keys(snap.glyphs).sort()).toEqual(["a", "b"]);
+  });
+
+  it("lists the stored recovery points, skipping a damaged one", async () => {
+    kv.data.clear();
+    kv.data.set(SESSION_KEY, serializeProject({ s: glyph("s", 0x53) }));
+    kv.data.set(SESSION_PREV_KEY, { version: 9, glyphs: "garbage" }); // unusable → not offered
+    kv.data.set(PREIMPORT_KEY, serializeProject({ p: glyph("p", 0x50), q: glyph("q", 0x51) }));
+    const points = await listRecoveryPoints();
+    expect(points.map((p) => [p.key, p.glyphCount])).toEqual([
+      [SESSION_KEY, 1],
+      [PREIMPORT_KEY, 2],
+    ]);
+    expect(points.every((p) => p.savedAt > 0)).toBe(true);
+  });
+
+  it("restoring a point is itself reversible: the replaced workspace becomes a point", async () => {
+    kv.data.clear();
+    kv.data.set(SESSION_KEY, serializeProject({ s: glyph("s", 0x53) }));
+    const [point] = await listRecoveryPoints();
+    await replaceWorkspace(point!.glyphs);
+    expect(Object.keys(state().glyphs)).toEqual(["s"]);
+    const back = (await listRecoveryPoints()).find((p) => p.key === PREIMPORT_KEY)!;
+    expect(Object.keys(back.glyphs).sort()).toEqual(["a", "b"]);
   });
 });

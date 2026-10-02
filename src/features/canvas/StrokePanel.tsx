@@ -48,6 +48,15 @@ const FLAT_ANGLE: StrokeProfile = { points: [{ x: 0, y: 0 }, { x: 1, y: 0 }] };
  */
 const CAPS: StrokeCap[] = ["butt", "round", "rectangle", "serif", "drop"];
 const JOINS: StrokeJoin[] = ["miter", "round", "bevel"];
+/** Display names for the cap / join dropdowns (the stored values stay lowercase ids). */
+const CAP_LABELS: Record<StrokeCap, string> = {
+  butt: "Butt",
+  round: "Round",
+  rectangle: "Rectangle",
+  serif: "Serif",
+  drop: "Drop",
+};
+const JOIN_LABELS: Record<StrokeJoin, string> = { miter: "Miter", round: "Round", bevel: "Bevel" };
 
 export function StrokePanel() {
   const setContourStroke = useDocumentStore((s) => s.setContourStroke);
@@ -73,6 +82,10 @@ export function StrokePanel() {
   // Multi-selection: edits apply to all targets; flag the "Stroke outline" toggle as mixed
   // when some targets are stroked and some aren't (shape fields show a representative value).
   const multi = targets.length > 1;
+  // Baked outlines (imported SVG, merged layers, expanded strokes) render verbatim — a
+  // stroke or corner style set on them has no effect, so say so instead of silently
+  // ignoring the edit.
+  const bakedCount = targets.filter((c) => c.baked).length;
   const mixedHasStroke = new Set(targets.map((c) => !!c.stroke)).size > 1;
 
   // Remember the last applied stroke + profiles + nib + fill colour so toggling them off
@@ -172,6 +185,17 @@ export function StrokePanel() {
         <div className="panel-content">
           {multi && (
             <p className="panel-multi-note">{targets.length} paths selected — edits apply to all.</p>
+          )}
+          {bakedCount > 0 && (
+            <p className="stroke-hint">
+              {bakedCount < targets.length
+                ? `${bakedCount} of these paths are finished outlines`
+                : bakedCount === 1
+                  ? "This path is a finished outline"
+                  : "These paths are finished outlines"}{" "}
+              (imported, merged or expanded) — stroke and corner settings don’t apply to{" "}
+              {bakedCount === 1 ? "it" : "them"}.
+            </p>
           )}
           <label className="stroke-select">
             <span className="stroke-select-label">Brush</span>
@@ -391,7 +415,7 @@ export function StrokePanel() {
                   <Slider label={`Cell · ${ht.cell} u`} value={ht.cell} min={4} max={120} step={1} onChange={(cell) => applyHalftone({ cell })} />
                   <Slider label={`Dot size · ${ht.size} u`} value={ht.size} min={1} max={120} step={1} onChange={(size) => applyHalftone({ size })} />
                   <Slider
-                    label={`Contrast · ${Math.round((ht.contrast ?? 0.5) * 100)}%`}
+                    label={`Falloff · ${Math.round((ht.contrast ?? 0.5) * 100)}%`}
                     value={Math.round((ht.contrast ?? 0.5) * 100)}
                     min={0}
                     max={100}
@@ -605,7 +629,7 @@ export function StrokePanel() {
                 >
                   {JOINS.map((j) => (
                     <option key={j} value={j}>
-                      {j}
+                      {JOIN_LABELS[j]}
                     </option>
                   ))}
                 </select>
@@ -668,7 +692,7 @@ function EndControls({
         >
           {CAPS.map((c) => (
             <option key={c} value={c}>
-              {c}
+              {CAP_LABELS[c]}
             </option>
           ))}
         </select>
@@ -679,7 +703,7 @@ function EndControls({
       {cap === "serif" && (
         <>
           <label className="stroke-select">
-            <span className="stroke-select-label">Algorithm</span>
+            <span className="stroke-select-label">Variant</span>
             <select
               className="stroke-select-field"
               value={serif.variant ?? "a"}
@@ -765,7 +789,7 @@ function EndControls({
       {cap === "drop" && (
         <>
           <label className="stroke-select">
-            <span className="stroke-select-label">Algorithm</span>
+            <span className="stroke-select-label">Variant</span>
             <select
               className="stroke-select-field"
               value={drop.variant ?? "a"}
@@ -784,7 +808,7 @@ function EndControls({
             onChange={(size) => onDrop({ ...drop, size })}
           />
           <Slider
-            label={`Reach · ${Math.round(drop.ratio * 100)}%`}
+            label={`Length · ${Math.round(drop.ratio * 100)}%`}
             value={Math.round(drop.ratio * 100)}
             min={20}
             max={400}
@@ -814,7 +838,7 @@ function EndControls({
       {cap === "rectangle" && (
         <>
           <label className="stroke-select">
-            <span className="stroke-select-label">Algorithm</span>
+            <span className="stroke-select-label">Variant</span>
             <select
               className="stroke-select-field"
               value={rect.variant ?? "a"}
@@ -879,10 +903,12 @@ function EndControls({
             step={5}
             onChange={(v) => onRect({ ...rect, radius: v / 100 })}
           />
+          {/* Same wording + sense as the serif/round toggles: ON = the far edge sits on
+              the node (the box grows inward). The rectangle's default is ON. */}
           <Toggle
-            label="Project past node"
-            checked={(rect.anchor ?? "node") === "outward"}
-            onChange={(on) => onRect({ ...rect, anchor: on ? "outward" : "node" })}
+            label="Far edge at node"
+            checked={(rect.anchor ?? "node") === "node"}
+            onChange={(on) => onRect({ ...rect, anchor: on ? "node" : "outward" })}
           />
         </>
       )}

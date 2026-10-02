@@ -126,3 +126,38 @@ describe("selectAll", () => {
     expect(useEditorStore.getState().selection).toHaveLength(2); // only LA (LB locked)
   });
 });
+
+describe("baked art through the clipboard", () => {
+  it("pasting imported (baked) art into an ordinary layer keeps it baked, so its holes survive", () => {
+    const ring: Contour = { ...open("r", 3), closed: true, baked: true };
+    seed([layer("LA", [ring]), layer("LB", [])], "LA");
+    useEditorStore.getState().setSelection([ref("r", "r_p0")]);
+    copy();
+    useDocumentStore.setState({ activeLayerId: "LB", selectedLayerIds: ["LB"] });
+    paste();
+    const lb = useDocumentStore.getState().glyphs["G"]!.layers.find((l) => l.id === "LB")!;
+    expect(lb.contours).toHaveLength(1);
+    expect(lb.contours[0]!.baked).toBe(true);
+  });
+});
+
+describe("cut keeps the path's style", () => {
+  it("Ctrl+X → Ctrl+V keeps colour, fill and corners (exactly like Ctrl+C → Ctrl+V)", () => {
+    const styled: Contour = {
+      ...open("s", 4),
+      closed: true,
+      paint: { fill: "#ff0000" },
+      filled: true,
+      corner: { type: "round", radius: 5 },
+    };
+    seed([layer("LA", [styled]), layer("LB", [])], "LA");
+    useEditorStore.getState().setSelection(styled.points.map((p) => ref("s", p.id)));
+    cut();
+    useDocumentStore.setState({ activeLayerId: "LB", selectedLayerIds: ["LB"] });
+    paste();
+    const pasted = useDocumentStore.getState().glyphs["G"]!.layers.find((l) => l.id === "LB")!.contours[0]!;
+    expect(pasted.paint).toEqual({ fill: "#ff0000" });
+    expect(pasted.filled).toBe(true);
+    expect(pasted.corner).toEqual({ type: "round", radius: 5 });
+  });
+});

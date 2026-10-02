@@ -1,8 +1,8 @@
 import { create } from "zustand";
 
 /**
- * Floating-HUD panel layout — where the user has dragged the Stroke, Color and
- * Layers panels. Session-only and NOT undoable (like the camera): moving a panel
+ * Floating-HUD panel layout — where the user has dragged the Stroke, Color, Layers,
+ * tool-options and Align panels. Session-only and NOT undoable (like the camera): moving a panel
  * is a UI gesture, never part of the document history. A panel with no stored
  * position renders at its default CSS spot; once dragged it switches to a fixed
  * viewport position. Positions are in viewport (client) pixels; `w` pins the
@@ -12,7 +12,7 @@ import { create } from "zustand";
  * panel — the old floating View/ControlPanel became the top-bar View menu
  * (`ViewMenu.tsx`), which is not draggable.
  */
-export type PanelId = "stroke" | "layers" | "fill";
+export type PanelId = "stroke" | "layers" | "fill" | "tool" | "align";
 
 export interface PanelPos {
   x: number;

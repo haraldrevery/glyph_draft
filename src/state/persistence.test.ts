@@ -221,6 +221,46 @@ describe("persistence — save", () => {
   });
 });
 
+describe("persistence — recovery points", () => {
+  const SESSION = "glyphdraft:project.session";
+  const SESSION_PREV = "glyphdraft:project.session.prev";
+
+  it("keeps the loaded workspace as this session's snapshot, rotating the last one", async () => {
+    kv.data.set(MAIN, file("gNOW"));
+    kv.data.set(SESSION, file("gLAST"));
+    const { saveNow } = await boot();
+    await saveNow(); // queued behind the snapshot, so it has landed
+    expect(idsIn(SESSION)).toEqual(["gNOW"]);
+    expect(idsIn(SESSION_PREV)).toEqual(["gLAST"]);
+  });
+
+  it("the snapshot survives later edits (it is outside the autosave rotation)", async () => {
+    kv.data.set(MAIN, file("gNOW"));
+    const { doc, saveNow } = await boot();
+    doc.getState().setAdvanceWidth(321);
+    await saveNow();
+    const session = kv.data.get(SESSION) as { glyphs: Record<string, Glyph> };
+    expect(session.glyphs.gNOW!.advanceWidth).toBe(600); // as loaded, not as edited
+  });
+
+  it("a tab that doesn't own the workspace writes no snapshot", async () => {
+    kv.data.set(MAIN, file("gNOW"));
+    lock.owner = false;
+    const { saveNow } = await boot();
+    await saveNow();
+    expect(kv.data.has(SESSION)).toBe(false);
+  });
+
+  it("an unreadable save (autosave paused) writes no snapshot", async () => {
+    kv.data.set(MAIN, file("gREAL"));
+    kv.failReads(100);
+    const { saveNow } = await boot();
+    kv.failReads(0);
+    await saveNow();
+    expect(kv.data.has(SESSION)).toBe(false);
+  });
+});
+
 it("CorruptValueError carries the raw text", () => {
   const e = new CorruptValueError("k", "{trunc");
   expect(e).toBeInstanceOf(Error);

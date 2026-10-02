@@ -1,15 +1,18 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useViewportStore } from "./state/viewportStore";
-import { initPersistence, saveNow, useSaveStatus } from "./state/persistence";
+import { initPersistence, saveNow } from "./state/persistence";
+import { notify } from "./state/noticeStore";
 import {
   exportProject,
   pickProject,
   replaceWorkspace,
   type PendingImport,
 } from "./features/project/projectActions";
+import { RecoverModal } from "./features/project/RecoverModal";
 import { initSettings } from "./state/settings";
 import { useCommandKeys } from "./commands";
 import { SaveStatus } from "./components/SaveStatus";
+import { NoticeBar } from "./components/NoticeBar";
 import { GlyphSidebar } from "./features/glyphs/GlyphSidebar";
 import { CanvasViewport } from "./features/canvas";
 import { ExportModal } from "./features/export/ExportModal";
@@ -18,6 +21,8 @@ import { MenuBar, Menu, MenuItem, SubMenu } from "./components/menu";
 import { Toggle } from "./components/controls/Toggle";
 import type { Theme } from "./types/viewport";
 import { ViewMenu } from "./features/canvas/ViewMenu";
+import { useEscapeKey } from "./components/useEscapeKey";
+import { EditMenu } from "./features/canvas/EditMenu";
 import { TextPreviewModal } from "./features/preview/TextPreviewModal";
 import { InfoModal, type InfoSection } from "./features/info/InfoModal";
 import { GLYPH_SETS } from "./features/glyphs/glyphSets";
@@ -68,9 +73,14 @@ export default function App() {
   // A picked, validated project waiting for the user to confirm it may REPLACE the
   // workspace (the import is destructive: everything currently open is swapped out).
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
+  const [recoverOpen, setRecoverOpen] = useState(false);
+  const closeRecover = useCallback(() => setRecoverOpen(false), []);
   const currentGlyphCount = useDocumentStore((s) => Object.keys(s.glyphs).length);
 
   useCommandKeys();
+  // The Replace-workspace confirm closes on Esc, like every other modal.
+  const cancelImport = useCallback(() => setPendingImport(null), []);
+  useEscapeKey(pendingImport !== null, cancelImport);
 
   // Import an SVG file onto a new (baked) layer of the active glyph. The hidden
   // input is created + clicked synchronously so the user-gesture survives.
@@ -84,7 +94,7 @@ export default function App() {
       if (!file) return;
       // Failures used to vanish (an unhandled rejection / a silent return): report
       // them in the header like the other file operations.
-      const fail = (error: string) => useSaveStatus.setState({ state: "error", error });
+      const fail = (error: string) => notify(error);
       file
         .text()
         .then((text) => {
@@ -121,13 +131,19 @@ export default function App() {
         <MenuBar aria-label="Main menu">
           <Menu label="File">
             <MenuItem label="Save" onSelect={() => void saveNow()} />
-            <MenuItem label="Export…" onSelect={() => setExportOpen(true)} />
+            <div className="control-divider" aria-hidden="true" />
+            <MenuItem label="Import SVG…" onSelect={handleImportSvg} />
+            <MenuItem label="Export SVGs…" onSelect={() => setExportOpen(true)} />
+            <div className="control-divider" aria-hidden="true" />
             <MenuItem label="Export project…" onSelect={() => void exportProject()} />
             <MenuItem
               label="Import project…"
               onSelect={() => void pickProject().then((p) => p && setPendingImport(p))}
             />
-            <MenuItem label="Import SVG…" onSelect={handleImportSvg} />
+            <MenuItem label="Restore previous version…" onSelect={() => setRecoverOpen(true)} />
+          </Menu>
+          <Menu label="Edit">
+            <EditMenu />
           </Menu>
           <Menu label="View">
             <ViewMenu />
@@ -149,7 +165,7 @@ export default function App() {
               <MenuItem label="Paper" checked={theme === "paper"} onSelect={() => setTheme("paper")} />
             </SubMenu>
             <div className="menu-accent">
-              <label htmlFor="accent-color">Accent colour</label>
+              <label htmlFor="accent-color">Accent color</label>
               <input
                 id="accent-color"
                 type="color"
@@ -191,11 +207,12 @@ export default function App() {
           </Menu>
           <Menu label="Information">
             <MenuItem label="About" onSelect={() => setInfoSection("about")} />
-            <MenuItem label="Licence" onSelect={() => setInfoSection("licence")} />
+            <MenuItem label="License" onSelect={() => setInfoSection("licence")} />
             <MenuItem label="Legal" onSelect={() => setInfoSection("legal")} />
             <MenuItem label="User guide" onSelect={() => setInfoSection("userGuide")} />
           </Menu>
         </MenuBar>
+        <NoticeBar />
         <SaveStatus />
       </header>
       <main className="app-main">
@@ -230,10 +247,10 @@ export default function App() {
           >
             <p className="confirm-message">
               Replace the current workspace ({currentGlyphCount} glyph
-              {currentGlyphCount === 1 ? "" : "s"}) with the imported project (
+              {currentGlyphCount === 1 ? "" : "s"}) with {pendingImport.source} (
               {pendingImport.glyphCount} glyph{pendingImport.glyphCount === 1 ? "" : "s"})? Undo
-              history is cleared and this can’t be undone. Export the current project first if you
-              want to keep it.
+              history is cleared. The current workspace stays recoverable (File → Restore previous version…),
+              or export it first to keep a copy of your own.
             </p>
             <div className="confirm-actions">
               <button type="button" className="btn" onClick={() => setPendingImport(null)}>
@@ -257,6 +274,18 @@ export default function App() {
           </div>
         </div>
       )}
+      <RecoverModal
+        open={recoverOpen}
+        onClose={closeRecover}
+        onPick={(p) => {
+          setRecoverOpen(false);
+          setPendingImport({
+            glyphs: p.glyphs,
+            glyphCount: p.glyphCount,
+            source: `the workspace from “${p.label.toLowerCase()}”`,
+          });
+        }}
+      />
       <InfoModal
         open={infoSection !== null}
         section={infoSection ?? "about"}

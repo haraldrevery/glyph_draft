@@ -9,7 +9,7 @@ _Placeholder — flesh this out with real instructions and screenshots-as-text._
 
 1. Pick or add a glyph in the left sidebar.
 2. Draw a path with the **Pen** (P) or **Pencil** (B) tool.
-3. Shape it: give it a **Stroke** (shape) and a **Color** (fill / stroke colour).
+3. Shape it: give it a **Stroke** (shape) and a **Color** (fill / stroke color).
 
 ## Tools
 
@@ -21,14 +21,15 @@ _Placeholder — flesh this out with real instructions and screenshots-as-text._
 ## Panels
 
 - **Stroke** — the outline's *shape* (width, caps, joins, profiles, brush model).
-- **Color** — *all* colour: fill (with gradient) and the stroke's colour/gradient.
+- **Color** — *all* color: fill (with gradient) and the stroke's color/gradient.
 - **Layers** — paint order, the two-layer Pathfinder (boolean / blend), and merging.
 
 ## Exporting
 
-**File → Export…** writes one `u_xxxx.svg` per glyph (web zip / desktop folder),
+**File → Export SVGs…** writes one `u_xxxx.svg` per glyph (web zip / desktop folder),
 reusing exactly what you see on the canvas.
 
 ## Keyboard shortcuts
 
-Rebind everything in **Settings → Keyboard shortcuts**.
+Every editing action is also in the **Edit** menu and the canvas right-click menu, each
+listed with its shortcut. Rebind everything in **Settings → Keyboard shortcuts**.

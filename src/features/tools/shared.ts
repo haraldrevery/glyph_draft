@@ -20,7 +20,7 @@ export function selectedIdSet(refs: PointRef[]): Set<string> {
 
 /** Translate an anchor and whichever handles it has by a delta. */
 export function translatePoint(p: AnchorPoint, d: Vec2): AnchorPoint {
-  const moved: AnchorPoint = { id: p.id, type: p.type, x: p.x + d.x, y: p.y + d.y };
+  const moved: AnchorPoint = { ...p, x: p.x + d.x, y: p.y + d.y }; // every other field kept
   if (p.handleIn) moved.handleIn = { x: p.handleIn.x + d.x, y: p.handleIn.y + d.y };
   if (p.handleOut) moved.handleOut = { x: p.handleOut.x + d.x, y: p.handleOut.y + d.y };
   return moved;

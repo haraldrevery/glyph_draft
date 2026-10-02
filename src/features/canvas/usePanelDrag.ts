@@ -94,6 +94,7 @@ export function usePanelDrag(id: PanelId) {
         right: "auto",
         bottom: "auto",
         margin: 0,
+        transform: "none", // a centred default spot (the Align strip) must not offset it
         // Cap the height to the viewport below the panel's top so a tall panel
         // scrolls its content instead of running off-screen (see .panel-content).
         maxHeight: `calc(100vh - ${pos.y + EDGE}px)`,

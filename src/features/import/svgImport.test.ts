@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseTransform, toPaint } from "./svgImport";
+import { cascadeProp, parseOpacity, parseStyleSheet, parseTransform, toPaint, type StyleTarget } from "./svgImport";
 import { apply } from "../../engine/geometry/affine";
 
 // (importSvg itself needs a DOM/DOMParser, so it's verified in-app; these cover the
@@ -54,3 +54,48 @@ describe("import hardening (regression)", () => {
   });
 });
 
+describe("CSS cascade (style sheets, inline style, attributes)", () => {
+  const el = (over: Partial<StyleTarget> & { attrs?: Record<string, string> } = {}): StyleTarget => ({
+    tag: over.tag ?? "path",
+    id: over.id ?? null,
+    classes: over.classes ?? [],
+    inlineStyle: over.inlineStyle ?? null,
+    attr: (n) => over.attrs?.[n] ?? null,
+  });
+
+  it("reads Illustrator-style class rules (they used to be ignored → everything black)", () => {
+    const rules = parseStyleSheet(".cls-1{fill:#e53935;}\n.cls-2, .cls-3 { fill: #1e88e5; fill-opacity: 0.5 }");
+    expect(cascadeProp("fill", el({ classes: ["cls-1"] }), rules)).toBe("#e53935");
+    expect(cascadeProp("fill", el({ classes: ["cls-3"] }), rules)).toBe("#1e88e5");
+    expect(cascadeProp("fill-opacity", el({ classes: ["cls-2"] }), rules)).toBe("0.5");
+  });
+
+  it("applies CSS precedence: style=\"\" > sheet rule > presentation attribute", () => {
+    const rules = parseStyleSheet(".a{fill:green}");
+    const attrOnly = el({ attrs: { fill: "red" } });
+    const attrAndRule = el({ classes: ["a"], attrs: { fill: "red" } });
+    const all = el({ classes: ["a"], attrs: { fill: "red" }, inlineStyle: "fill: blue" });
+    expect(cascadeProp("fill", attrOnly, rules)).toBe("red");
+    expect(cascadeProp("fill", attrAndRule, rules)).toBe("green"); // was "red"
+    expect(cascadeProp("fill", all, rules)).toBe("blue");
+  });
+
+  it("the more specific rule wins; at equal specificity the later one does", () => {
+    const rules = parseStyleSheet("path{fill:red} .a{fill:green} .a{fill:teal} #x{fill:blue}");
+    expect(cascadeProp("fill", el({ classes: ["a"] }), rules)).toBe("teal");
+    expect(cascadeProp("fill", el({ classes: ["a"], id: "x" }), rules)).toBe("blue");
+    expect(cascadeProp("fill", el(), rules)).toBe("red");
+  });
+
+  it("skips selectors it can't evaluate instead of mis-applying them", () => {
+    const rules = parseStyleSheet("g .a{fill:red} .a:hover{fill:red} @media print{.a{fill:red}}");
+    expect(cascadeProp("fill", el({ classes: ["a"] }), rules)).toBeNull();
+  });
+
+  it("parses opacity as a number or a percentage; an unusable value is ignored, not 0", () => {
+    expect(parseOpacity("0.25")).toBe(0.25);
+    expect(parseOpacity("50%")).toBe(0.5);
+    expect(parseOpacity("inherit")).toBeNull(); // used to become 0 → invisible
+    expect(parseOpacity("2")).toBe(1);
+  });
+});

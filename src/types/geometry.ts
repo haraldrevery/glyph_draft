@@ -371,6 +371,12 @@ export interface Contour {
   /** Optional per-path corner treatment (round/chamfer/inverted), applied to every
    *  corner node at render/export. Additive/optional so old saves load unchanged. */
   corner?: CornerStyle;
+  /** FINAL baked geometry — an imported SVG shape, a merged layer, an expanded stroke.
+   *  Rendered VERBATIM: its winding is kept (so its holes survive nonzero fill) and no
+   *  stroke, corner or force-CW is applied. Per contour, not per layer, so it survives
+   *  copy/paste and move-to-layer, and so a path drawn later on the same layer renders
+   *  normally. projectFile v9 (older files' layer flag is lifted onto their contours). */
+  baked?: boolean;
 }
 
 /** A sensible starting stroke when the user first enables one on a path. */

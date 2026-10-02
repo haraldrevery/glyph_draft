@@ -141,26 +141,32 @@ export function nextLayerName(glyph: Glyph): string {
  * the geometry keeps its world coordinates and only identity changes.
  */
 export function cloneContourWithNewIds(contour: Contour): Contour {
+  // SPREAD, then override: every field — today's paint/filled/corner/baked/stroke and any
+  // added later — is carried by default. (This used to list the fields to keep; a new
+  // optional field compiled clean and was silently lost on paste/duplicate, which is how
+  // `paint`/`filled`/`corner` were once dropped.) Nested styles are deep-cloned so the
+  // copy is independent.
   const clone: Contour = {
+    ...structuredClone(contour),
     id: createId("ct"),
-    closed: contour.closed,
     points: contour.points.map((p) => {
-      const copy: AnchorPoint = { id: createId("pt"), type: p.type, x: p.x, y: p.y };
-      if (p.handleIn) copy.handleIn = { x: p.handleIn.x, y: p.handleIn.y };
-      if (p.handleOut) copy.handleOut = { x: p.handleOut.x, y: p.handleOut.y };
+      const copy: AnchorPoint = { ...p, id: createId("pt") };
+      if (p.handleIn) copy.handleIn = { ...p.handleIn };
+      if (p.handleOut) copy.handleOut = { ...p.handleOut };
       return copy;
     }),
   };
-  // Carry EVERY optional per-contour style (deep-cloned so the copy is independent), so
-  // duplicating a layer — and paste-in-place — preserve the path's full appearance.
-  // NOTE: this object is rebuilt field-by-field, so a new optional field on `Contour`
-  // must be added HERE too. Omitting one compiles clean and silently loses it on
-  // paste/duplicate — which is exactly how `paint`/`filled`/`corner` were dropped before.
-  if (contour.stroke) clone.stroke = structuredClone(contour.stroke);
-  if (contour.paint) clone.paint = structuredClone(contour.paint);
-  if (contour.filled !== undefined) clone.filled = contour.filled;
-  if (contour.corner) clone.corner = { ...contour.corner };
   return clone;
+}
+
+/**
+ * Mark contours as FINAL baked geometry (`Contour.baked` — rendered verbatim, winding
+ * kept). Used wherever finished outlines enter the document: SVG import, Expand stroke,
+ * Merge layers, and the load-time lift of the old layer-level flag. Returns the same
+ * contour object when it is already marked.
+ */
+export function markBaked(contours: Contour[]): Contour[] {
+  return contours.map((c) => (c.baked ? c : { ...c, baked: true }));
 }
 
 /**
@@ -179,12 +185,10 @@ export function cloneLayer(layer: Layer, name = `${layer.name} copy`): Layer {
   };
   // NOTE: this rebuilds `Layer` field-by-field, so a new optional field must be added
   // HERE too — omitting one compiles clean and is silently lost on duplicate/paste.
+  // (A baked import/merge keeps its holes through the copy because `baked` lives on each
+  // contour, which cloneContourWithNewIds carries.)
   //
-  // `baked` must survive the copy: renderContours returns a baked layer's contours
-  // VERBATIM (Invariant 4's deliberate exception). Dropping the flag force-CWs them,
-  // which fills in the holes of a duplicated import / merge / expanded stroke.
-  if (layer.baked) clone.baked = true;
-  // `groupId` must survive too: the clone is inserted directly above its source, i.e.
+  // `groupId` must survive: the clone is inserted directly above its source, i.e.
   // INSIDE the group's run, so dropping it would break the contiguity invariant.
   if (layer.groupId) clone.groupId = layer.groupId;
   return clone;

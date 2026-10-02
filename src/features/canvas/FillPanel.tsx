@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { coalesceNextEdit } from "../../state/history";
 import { useDocumentStore } from "../../state/documentStore";
 import { usePaletteStore } from "../../state/paletteStore";
@@ -9,7 +9,8 @@ import { Knob } from "../../components/controls/Knob";
 import { CollapseButton } from "../../components/controls/CollapseButton";
 import { usePanelDrag } from "./usePanelDrag";
 import { useEditTargets } from "./useEditTargets";
-import { DEFAULT_GRADIENT, type GradientFill, type Paint } from "../../types/geometry";
+import type { GradientFill } from "../../types/geometry";
+import type { PaintPatch } from "../../engine/paint/paint";
 
 /** Fixed Fill-palette inks (black/white + a small spectrum) shown above recent colours. */
 const PRESET_INKS = ["#000000", "#ffffff", "#e53935", "#fb8c00", "#fdd835", "#43a047", "#1e88e5", "#8e24aa"];
@@ -21,14 +22,14 @@ const PRESET_INKS = ["#000000", "#ffffff", "#e53935", "#fb8c00", "#fdd835", "#43
  *
  * It edits the `paint` of the TARGET paths — the contours owning a selected anchor,
  * or (if nothing is selected) every contour in the active layer — through the
- * undoable `setContourPaint` action. Default = opaque black ink = no `paint` stored,
- * so colour stays purely opt-in (see Invariant 4).
+ * undoable, per-contour `patchContourPaint` action. Default = opaque black ink = no
+ * `paint` stored, so colour stays purely opt-in (see Invariant 4).
  */
 export function FillPanel() {
-  const setContourPaint = useDocumentStore((s) => s.setContourPaint);
+  const patchContourPaint = useDocumentStore((s) => s.patchContourPaint);
   const setContourFilled = useDocumentStore((s) => s.setContourFilled);
   const setStrokeColor = useDocumentStore((s) => s.setStrokeColor);
-  const setStrokeGradient = useDocumentStore((s) => s.setStrokeGradient);
+  const patchStrokeGradient = useDocumentStore((s) => s.patchStrokeGradient);
   const recentColors = usePaletteStore((s) => s.recentColors);
   const pushRecentColor = usePaletteStore((s) => s.pushRecentColor);
   const palettes = useColorPaletteStore((s) => s.palettes);
@@ -73,13 +74,8 @@ export function FillPanel() {
     targets.find((c) => c.stroke && c.paint?.fill && c.paint.fill !== "none")?.paint?.fill ??
     "#000000";
   const strokeGradient = targets.find((c) => c.stroke?.gradient)?.stroke?.gradient;
-  const setStrokeGrad = (patch: Partial<GradientFill> | null) => {
-    if (patch === null) {
-      setStrokeGradient(targetIds, null);
-      return;
-    }
-    setStrokeGradient(targetIds, { ...(strokeGradient ?? DEFAULT_GRADIENT), ...patch });
-  };
+  // Per contour: each path's own outline gradient gets just this field (see applyPaint).
+  const setStrokeGrad = (patch: Partial<GradientFill> | null) => patchStrokeGradient(targetIds, patch);
 
   // Fill paint for the target paths (default = black ink = no paint stored).
   const currentPaint = targets.find((c) => c.paint)?.paint;
@@ -101,21 +97,11 @@ export function FillPanel() {
     else if (currentPaint.fill && currentPaint.fill !== "none") lastFill.current = currentPaint.fill;
   });
 
-  // Commit a fully-formed paint: a plain opaque-black paint (and no gradient) IS the
-  // default ink, so we store NOTHING — the no-paint (unchanged) render/export path
-  // stays in effect. A gradient is never "default", so it's always preserved.
-  const commitPaint = (next: Paint) => {
-    const isDefault =
-      (next.fill === undefined || next.fill === "#000000") &&
-      (next.opacity === undefined || next.opacity === 1) &&
-      next.gradient === undefined;
-    setContourPaint(targetIds, isDefault ? null : next);
-  };
-  const applyPaint = (patch: Partial<Paint>) => {
-    commitPaint({ ...(currentPaint ?? {}), ...patch });
-    // Remember any concrete colour the user applies (ignores "none"/opacity-only edits).
-    if (patch.fill && patch.fill !== "none") pushRecentColor(patch.fill);
-  };
+  // Edits are PATCHES applied to each target path's own paint (store: patchContourPaint
+  // → engine/paint `patchPaint`), never "the first path's paint written to all": dragging
+  // Opacity over a red and a blue path keeps one red and one blue. Opaque black with no
+  // gradient is the default ink and is stored as no paint at all.
+  const applyPaint = (patch: PaintPatch) => patchContourPaint(targetIds, patch);
 
   // Fill on/off (independent of stroke). Off = no interior; on = paint the interior.
   // Turning on also clears any legacy Transparent (`fill:"none"`) so a colour shows.
@@ -127,33 +113,18 @@ export function FillPanel() {
   // Gradient: edit `paint.gradient` fields; `null` removes it (delete, not undefined, so
   // exactOptionalPropertyTypes stays satisfied and the paint can collapse to default).
   const gradient = currentPaint?.gradient;
-  const setGradient = (patch: Partial<GradientFill> | null) => {
-    const base = currentPaint ?? {};
-    if (patch === null) {
-      const next: Paint = { ...base };
-      delete next.gradient;
-      commitPaint(next);
-    } else {
-      commitPaint({ ...base, gradient: { ...(gradient ?? DEFAULT_GRADIENT), ...patch } });
-    }
-  };
-
-  // Hex entry: a local draft so partial typing doesn't fight the live colour; commit a
-  // valid #rrggbb on Enter/blur.
-  const [hexDraft, setHexDraft] = useState<string | null>(null);
-  const commitHex = (v: string) => {
-    const c = (v.startsWith("#") ? v : `#${v}`).toLowerCase();
-    if (/^#[0-9a-f]{6}$/.test(c)) applyPaint({ fill: c });
-    setHexDraft(null);
-  };
+  const setGradient = (patch: Partial<GradientFill> | null) => patchContourPaint(targetIds, { gradient: patch });
 
   // Saved colour palettes (a consistent theme): pick one, apply its swatches, and
-  // manage it inline (add the current colour, rename, delete) — the StrokePanel preset
-  // pattern. Persisted via the settings file (colorPaletteStore), not the document.
+  // manage it inline (add a colour, rename, delete) — the StrokePanel preset pattern.
+  // Persisted via the settings file (colorPaletteStore), not the document. The palette is
+  // a colour SOURCE for both Fill and Stroke, so its picker sits above both sections (it
+  // used to live inside Fill, hidden whenever a path had no interior — i.e. unreachable
+  // for the default stroke-only workflow).
   const activePalette = palettes.find((p) => p.id === activePaletteId) ?? null;
-  const addToPalette = () => {
-    if (!activePalette || paintTransparent) return;
-    const c = paintColor.toLowerCase();
+  const addToPalette = (hex: string) => {
+    if (!activePalette) return;
+    const c = hex.toLowerCase();
     if (activePalette.colors.some((x) => x.toLowerCase() === c)) return; // dedupe
     updatePalette(activePalette.id, { colors: [...activePalette.colors, c] });
   };
@@ -176,13 +147,29 @@ export function FillPanel() {
 
       {collapsed ? null : targets.length === 0 ? (
         <div className="panel-content">
-          <p className="stroke-hint">Select a path to set its colour.</p>
+          <p className="stroke-hint">Select a path to set its color.</p>
         </div>
       ) : (
         <div className="panel-content">
           {multi && (
             <p className="panel-multi-note">{targets.length} paths selected — edits apply to all.</p>
           )}
+          <label className="stroke-select">
+            <span className="stroke-select-label">Palette</span>
+            <select
+              className="stroke-select-field"
+              value={activePaletteId ?? ""}
+              onChange={(e) => setActivePaletteId(e.target.value || null)}
+            >
+              <option value="">— none —</option>
+              {palettes.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
           <div className="stroke-section">
             <span className="stroke-section-title">Fill</span>
             <Toggle
@@ -194,202 +181,29 @@ export function FillPanel() {
             {hasOpenTarget && (
               <p className="stroke-hint">Open paths can’t be filled — close the path first.</p>
             )}
-            {!filledState ? null : (
+            {filledState && (
               <>
-            <label className="stroke-fill-row">
-              <span>Color</span>
-              <div className="fill-color-entry">
-                <input
-                  type="color"
-                  className={`stroke-fill-swatch${mixedFillColor ? " is-mixed" : ""}`}
+                <ColorPicker
+                  ariaLabel="Fill color"
+                  gesture="fill-color"
                   value={paintColor}
-                  onChange={(e) => {
-                    coalesceNextEdit("fill-color");
-                    applyPaint({ fill: e.target.value });
-                  }}
+                  mixed={mixedFillColor}
+                  showActive={!paintTransparent}
+                  recent={recentColors}
+                  palette={activePalette?.colors ?? null}
+                  onPick={(fill) => applyPaint({ fill })}
+                  onCommit={pushRecentColor}
+                  onAddToPalette={paintTransparent ? null : () => addToPalette(paintColor)}
+                  onRemoveFromPalette={removeFromPalette}
                 />
-                {mixedFillColor && <span className="swatch-mixed">Mixed</span>}
-                <input
-                  type="text"
-                  className="fill-hex-input"
-                  spellCheck={false}
-                  aria-label="Hex color"
-                  value={hexDraft ?? paintColor}
-                  onChange={(e) => setHexDraft(e.target.value)}
-                  onBlur={(e) => commitHex(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") commitHex((e.target as HTMLInputElement).value);
-                  }}
+                <Slider
+                  label={`Opacity · ${Math.round(paintOpacity * 100)}%`}
+                  value={Math.round(paintOpacity * 100)}
+                  min={0}
+                  max={100}
+                  step={5}
+                  onChange={(v) => applyPaint({ opacity: v / 100 })}
                 />
-              </div>
-            </label>
-
-            <div className="fill-swatch-grid" role="group" aria-label="Preset colors">
-              {PRESET_INKS.map((hex) => (
-                <button
-                  key={hex}
-                  type="button"
-                  className={`fill-swatch${!paintTransparent && hex === paintColor.toLowerCase() ? " is-active" : ""}`}
-                  style={{ background: hex }}
-                  title={hex}
-                  aria-label={hex}
-                  onClick={() => applyPaint({ fill: hex })}
-                />
-              ))}
-            </div>
-            {recentColors.length > 0 && (
-              <div className="fill-swatch-grid fill-swatch-recent" role="group" aria-label="Recent colors">
-                {recentColors.map((hex) => (
-                  <button
-                    key={hex}
-                    type="button"
-                    className={`fill-swatch${!paintTransparent && hex === paintColor.toLowerCase() ? " is-active" : ""}`}
-                    style={{ background: hex }}
-                    title={hex}
-                    aria-label={hex}
-                    onClick={() => applyPaint({ fill: hex })}
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Saved palettes are just another colour source: pick a set, then click its
-                swatches like Presets/Recent. Managing the set lives in the separate row
-                at the bottom of this section so it can't be mistaken for a colour action. */}
-            <label className="stroke-select">
-              <span className="stroke-select-label">Palette</span>
-              <select
-                className="stroke-select-field"
-                value={activePaletteId ?? ""}
-                onChange={(e) => setActivePaletteId(e.target.value || null)}
-              >
-                <option value="">— none —</option>
-                {palettes.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {activePalette && (
-              <>
-                {activePalette.colors.length > 0 && (
-                  <div className="fill-swatch-grid" role="group" aria-label="Palette colors">
-                    {activePalette.colors.map((hex, i) => (
-                      <button
-                        key={`${hex}-${i}`}
-                        type="button"
-                        className={`fill-swatch${!paintTransparent && hex.toLowerCase() === paintColor.toLowerCase() ? " is-active" : ""}`}
-                        style={{ background: hex }}
-                        title={`${hex} — Alt-click to remove`}
-                        aria-label={hex}
-                        onClick={(e) => (e.altKey ? removeFromPalette(hex) : applyPaint({ fill: hex }))}
-                      />
-                    ))}
-                  </div>
-                )}
-                <div className="fill-palette-add">
-                  <button
-                    type="button"
-                    className="btn stroke-save-preset"
-                    title="Add the current fill colour to this palette"
-                    disabled={paintTransparent}
-                    onClick={addToPalette}
-                  >
-                    + Add colour
-                  </button>
-                  {activePalette.colors.length > 0 && (
-                    <span className="fill-palette-hint">Alt-click a swatch to remove it</span>
-                  )}
-                </div>
-              </>
-            )}
-
-            <Slider
-              label={`Opacity · ${Math.round(paintOpacity * 100)}%`}
-              value={Math.round(paintOpacity * 100)}
-              min={0}
-              max={100}
-              step={5}
-              onChange={(v) => applyPaint({ opacity: v / 100 })}
-            />
-
-            {/* Manage palettes — administrative, separated from the colour-picking above so
-                "Delete palette" can never be read as deleting a colour (two-click confirm). */}
-            <div className="fill-palette-manage">
-              {activePalette && (
-                <>
-                  <span className="stroke-select-label">Manage palette</span>
-                  <div className="stroke-preset-manage">
-                    <input
-                      className="stroke-preset-name"
-                      type="text"
-                      aria-label="Palette name"
-                      value={activePalette.label}
-                      onChange={(e) => updatePalette(activePalette.id, { label: e.target.value })}
-                    />
-                    <button
-                      type="button"
-                      className={`btn stroke-save-preset${confirmDelete ? " is-confirming" : ""}`}
-                      title="Delete this entire palette"
-                      onClick={() => {
-                        if (confirmDelete) {
-                          removePalette(activePalette.id);
-                          setActivePaletteId(null);
-                          setConfirmDelete(false);
-                        } else {
-                          setConfirmDelete(true);
-                        }
-                      }}
-                      onBlur={() => setConfirmDelete(false)}
-                    >
-                      {confirmDelete ? "Delete palette?" : "Delete palette"}
-                    </button>
-                  </div>
-                </>
-              )}
-              {newPaletteName === null ? (
-                <button
-                  type="button"
-                  className="btn stroke-save-preset"
-                  title="Create a new colour palette"
-                  onClick={() => setNewPaletteName("My palette")}
-                >
-                  New palette…
-                </button>
-              ) : (
-                <form
-                  className="stroke-save-form"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    const label = newPaletteName.trim();
-                    if (label) {
-                      const seed = !paintTransparent ? [paintColor.toLowerCase()] : [];
-                      setActivePaletteId(upsertPalette(label, seed));
-                    }
-                    setNewPaletteName(null);
-                  }}
-                >
-                  <input
-                    className="stroke-preset-name"
-                    type="text"
-                    autoFocus
-                    aria-label="New palette name"
-                    value={newPaletteName}
-                    onChange={(e) => setNewPaletteName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Escape") setNewPaletteName(null);
-                    }}
-                  />
-                  <button type="submit" className="btn stroke-save-preset" disabled={!newPaletteName.trim()}>
-                    Create
-                  </button>
-                  <button type="button" className="btn stroke-save-preset" onClick={() => setNewPaletteName(null)}>
-                    Cancel
-                  </button>
-                </form>
-              )}
-            </div>
               </>
             )}
           </div>
@@ -457,20 +271,19 @@ export function FillPanel() {
             <span className="stroke-section-title">Stroke</span>
             {hasStrokedTarget ? (
               <>
-                <label className="stroke-fill-row">
-                  <span>Colour</span>
-                  <input
-                    type="color"
-                    className={`stroke-fill-swatch${mixedStrokeColor ? " is-mixed" : ""}`}
-                    aria-label="Stroke colour"
-                    value={strokeColor}
-                    onChange={(e) => {
-                      coalesceNextEdit("stroke-color");
-                      setStrokeColor(targetIds, e.target.value);
-                    }}
-                  />
-                  {mixedStrokeColor && <span className="swatch-mixed">Mixed</span>}
-                </label>
+                <ColorPicker
+                  ariaLabel="Stroke color"
+                  gesture="stroke-color"
+                  value={strokeColor}
+                  mixed={mixedStrokeColor}
+                  showActive
+                  recent={recentColors}
+                  palette={activePalette?.colors ?? null}
+                  onPick={(color) => setStrokeColor(targetIds, color)}
+                  onCommit={pushRecentColor}
+                  onAddToPalette={() => addToPalette(strokeColor)}
+                  onRemoveFromPalette={removeFromPalette}
+                />
                 <Toggle
                   label="Gradient"
                   checked={!!strokeGradient}
@@ -534,11 +347,216 @@ export function FillPanel() {
                 )}
               </>
             ) : (
-              <p className="stroke-hint">Add a stroke in the Stroke panel to set its colour.</p>
+              <p className="stroke-hint">Add a stroke in the Stroke panel to set its color.</p>
             )}
           </div>
+
+          {/* Manage palettes — administrative, separated from the colour-picking above so
+              "Delete palette" can never be read as deleting a colour (two-click confirm). */}
+          <div className="fill-palette-manage">
+            {activePalette && (
+              <>
+                <span className="stroke-select-label">Manage palette</span>
+                <div className="stroke-preset-manage">
+                  <input
+                    className="stroke-preset-name"
+                    type="text"
+                    aria-label="Palette name"
+                    value={activePalette.label}
+                    onChange={(e) => updatePalette(activePalette.id, { label: e.target.value })}
+                  />
+                  <button
+                    type="button"
+                    className={`btn stroke-save-preset${confirmDelete ? " is-confirming" : ""}`}
+                    title="Delete this entire palette"
+                    onClick={() => {
+                      if (confirmDelete) {
+                        removePalette(activePalette.id);
+                        setActivePaletteId(null);
+                        setConfirmDelete(false);
+                      } else {
+                        setConfirmDelete(true);
+                      }
+                    }}
+                    onBlur={() => setConfirmDelete(false)}
+                  >
+                    {confirmDelete ? "Delete palette?" : "Delete palette"}
+                  </button>
+                </div>
+              </>
+            )}
+            {newPaletteName === null ? (
+              <button
+                type="button"
+                className="btn stroke-save-preset"
+                title="Create a new color palette"
+                onClick={() => setNewPaletteName("My palette")}
+              >
+                New palette…
+              </button>
+            ) : (
+              <form
+                className="stroke-save-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const label = newPaletteName.trim();
+                  if (label) {
+                    // Seed with the colour in view: the fill's, else the stroke's.
+                    const seedColor = filledState && !paintTransparent ? paintColor : hasStrokedTarget ? strokeColor : null;
+                    const seed = seedColor ? [seedColor.toLowerCase()] : [];
+                    setActivePaletteId(upsertPalette(label, seed));
+                  }
+                  setNewPaletteName(null);
+                }}
+              >
+                <input
+                  className="stroke-preset-name"
+                  type="text"
+                  autoFocus
+                  aria-label="New palette name"
+                  value={newPaletteName}
+                  onChange={(e) => setNewPaletteName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setNewPaletteName(null);
+                  }}
+                />
+                <button type="submit" className="btn stroke-save-preset" disabled={!newPaletteName.trim()}>
+                  Create
+                </button>
+                <button type="button" className="btn stroke-save-preset" onClick={() => setNewPaletteName(null)}>
+                  Cancel
+                </button>
+              </form>
+            )}
+          </div>
+
         </div>
       )}
     </div>
+  );
+}
+
+interface ColorPickerProps {
+  ariaLabel: string;
+  /** Undo-coalescing tag for the native picker's continuous input (one drag = one step). */
+  gesture: string;
+  value: string;
+  mixed: boolean;
+  /** Highlight the swatch matching `value` (off while the fill is the legacy "none"). */
+  showActive: boolean;
+  recent: string[];
+  /** The active saved palette's colours, or null when no palette is selected. */
+  palette: string[] | null;
+  /** Apply a colour (live — called for every native-picker input event too). */
+  onPick: (hex: string) => void;
+  /** A colour was CHOSEN (swatch, hex entry, or the picker's final value) — for Recent. */
+  onCommit: (hex: string) => void;
+  /** Add the current colour to the palette; null hides the "+" tile. */
+  onAddToPalette: (() => void) | null;
+  onRemoveFromPalette: (hex: string) => void;
+}
+
+/**
+ * One colour control — native swatch + hex entry + preset / recent / palette swatches —
+ * shared by the Fill and Stroke sections so both offer the same tools (the stroke colour
+ * used to get a bare swatch only). Recent colours record CHOSEN colours only: dragging
+ * the native picker no longer floods the 8-slot Recent row with every intermediate shade.
+ */
+function ColorPicker({
+  ariaLabel,
+  gesture,
+  value,
+  mixed,
+  showActive,
+  recent,
+  palette,
+  onPick,
+  onCommit,
+  onAddToPalette,
+  onRemoveFromPalette,
+}: ColorPickerProps) {
+  // Hex entry: a local draft so partial typing doesn't fight the live colour; commit a
+  // valid #rrggbb on Enter/blur.
+  const [hexDraft, setHexDraft] = useState<string | null>(null);
+  const choose = (hex: string) => {
+    onPick(hex);
+    onCommit(hex);
+  };
+  const commitHex = (v: string) => {
+    const c = (v.startsWith("#") ? v : `#${v}`).toLowerCase();
+    if (/^#[0-9a-f]{6}$/.test(c)) choose(c);
+    setHexDraft(null);
+  };
+  const isActive = (hex: string) => showActive && hex.toLowerCase() === value.toLowerCase();
+  const swatch = (hex: string, key: string, onClick: (e: ReactMouseEvent) => void, title = hex) => (
+    <button
+      key={key}
+      type="button"
+      className={`fill-swatch${isActive(hex) ? " is-active" : ""}`}
+      style={{ background: hex }}
+      title={title}
+      aria-label={hex}
+      onClick={onClick}
+    />
+  );
+
+  return (
+    <>
+      <label className="stroke-fill-row">
+        <span>Color</span>
+        <div className="fill-color-entry">
+          <input
+            type="color"
+            className={`stroke-fill-swatch${mixed ? " is-mixed" : ""}`}
+            aria-label={ariaLabel}
+            value={value}
+            onChange={(e) => {
+              coalesceNextEdit(gesture);
+              onPick(e.target.value);
+            }}
+            onBlur={(e) => onCommit(e.target.value)}
+          />
+          {mixed && <span className="swatch-mixed">Mixed</span>}
+          <input
+            type="text"
+            className="fill-hex-input"
+            spellCheck={false}
+            aria-label={`${ariaLabel} (hex)`}
+            value={hexDraft ?? value}
+            onChange={(e) => setHexDraft(e.target.value)}
+            onBlur={(e) => commitHex(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitHex((e.target as HTMLInputElement).value);
+            }}
+          />
+        </div>
+      </label>
+      <div className="fill-swatch-grid" role="group" aria-label="Preset colors">
+        {PRESET_INKS.map((hex) => swatch(hex, hex, () => choose(hex)))}
+      </div>
+      {recent.length > 0 && (
+        <div className="fill-swatch-grid fill-swatch-recent" role="group" aria-label="Recent colors">
+          {recent.map((hex) => swatch(hex, hex, () => choose(hex)))}
+        </div>
+      )}
+      {palette && (
+        <div className="fill-swatch-grid" role="group" aria-label="Palette colors">
+          {palette.map((hex, i) =>
+            swatch(hex, `${hex}-${i}`, (e) => (e.altKey ? onRemoveFromPalette(hex) : choose(hex)), `${hex} — Alt-click to remove`),
+          )}
+          {onAddToPalette && (
+            <button
+              type="button"
+              className="fill-swatch fill-swatch-add"
+              title="Add the current color to this palette"
+              aria-label="Add the current color to this palette"
+              onClick={onAddToPalette}
+            >
+              +
+            </button>
+          )}
+        </div>
+      )}
+    </>
   );
 }

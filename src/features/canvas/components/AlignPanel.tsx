@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useEditorStore } from "../../../state/editorStore";
 import { alignSelectedPaths, canAlign } from "../editActions";
+import { usePanelDrag } from "../usePanelDrag";
 import type { AlignType } from "../../../engine/geometry/align";
 
 /**
@@ -99,10 +100,13 @@ const GROUPS: { type: AlignType; title: string }[][] = [
 export function AlignPanel() {
   // Re-render when the node selection changes; gate on having ≥2 selected paths.
   useEditorStore((s) => s.selection);
+  // Movable like the other panels: drag the strip by any spot between its buttons (the
+  // hook ignores presses ON a button, so the buttons still click).
+  const { ref, style, dragProps } = usePanelDrag("align");
   if (!canAlign()) return null;
 
   return (
-    <div className="align-panel" role="toolbar" aria-label="Align paths">
+    <div ref={ref} style={style} className="align-panel panel-drag" role="toolbar" aria-label="Align paths" {...dragProps}>
       {GROUPS.map((group, gi) => (
         <div className="align-group" key={gi}>
           {group.map((b) => (
